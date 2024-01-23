@@ -28,6 +28,12 @@ path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
 
 #Output of all plots, the markdowns include only selections
 pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
+
+#Create Folder if not existing
+ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_16S")), dir.create(file.path(GitClonePath, "SL_Output_16S")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_RNA")), dir.create(file.path(GitClonePath, "SL_Output_RNA")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_RNA")), dir.create(file.path(GitClonePath, "SL_Output_RNA")), FALSE)
+ifelse(!dir.exists(file.path(GitClonePath, "SL_Plots")), dir.create(file.path(GitClonePath, "SL_Plots")), FALSE)
 ```
 
 ## 0.2 Packages
