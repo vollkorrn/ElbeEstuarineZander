@@ -1,0 +1,4279 @@
+---
+title: "SL_WGCNA_Part2_16.01.2024_Paper"
+output: html_document
+date: "2024-01-16"
+---
+
+# 0 Global Setup 
+
+## 0.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r}
+GitClonePath <- "/Users/admin/Desktop/ElbeEstuarineZander"
+setwd(GitClonePath)
+```
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Input files from SL_Linux pipeline and addional Blasts
+path_Input_16S <-  paste(GitClonePath, "SL_Input_16S", sep="/")
+path_Input_RNA <- paste(GitClonePath, "SL_Input_RNA", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "SL_Output_16S", sep="/")
+path_Output_RNA     <- paste(GitClonePath, "SL_Output_RNA", sep="/")
+path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
+```
+
+## 0.2 Packages
+
+```{r}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "AnnotationDbi", 
+#   "AnnotationHub", 
+#   "Biobase", 
+#   "GSEABase", 
+#   "DECIPHER", 
+#   "ComplexHeatmap", 
+#   "Biostrings", 
+#   "BiocParallel", 
+#   "BiocNeighbors", 
+#   "BiocFileCache", 
+#   "BiocBaseUtils", 
+#   "GO.db", 
+#   "GOSemSim", 
+#   "ShortRead", 
+#   "SummarizedExperiment", 
+#   "TreeSummarizedExperiment", 
+#   "phyloseq", 
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "DESeq2",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   "clusterProfiler", 
+#   "GenomeInfoDbData"
+#   ), force =T)
+
+#New in this Part: 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "sva",
+#   "fgsea",
+#   "org.Hs.eg.db"
+#   ), force=T)
+```
+
+Most of the packages needed here are stored in the packrat::restore
+
+## 0.3 Input Files
+
+```{r}
+Date <- "16.01.2024"
+Species <- "SL"
+Analysis <- "WGCNA"
+
+################
+#Bacteria Input#
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(  "SL_2021_Summer_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+pslistraw <- readRDS(file.path(path_Output_16S,paste(paste("SL_2021_Summer_ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+##################################################
+#AnnotationFile Created in Sections 1.1.3 - 1.1.5#
+SLUCGeneManual <- read.csv2(file.path(path_Input_RNA, "SLUCGene-Manual-17.06.2023.csv"))[-1]
+
+#############
+#Sample File#
+SAMDF<- read.table(file=file.path(path_Input_RNA, "SL_samplefile_04.01.2024.csv") ,sep=";",dec = ".")
+
+#####################
+#Count and TPM files#
+cnt_RNA_Gill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_countsNoRibo_08.01.24.rds"))
+cnt_RNA_Liver <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_countsNoRibo_08.01.24.rds"))
+tpm_RNA_Liver  <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_tpm_NoRibo_08.01.24.rds"))
+tpm_RNA_Gill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_tpm_NoRibo_08.01.24.rds"))
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+################################################
+#Assign the SL_RNA Output to Global Environment#
+save_name_RNA_Deseq2 <- "SL_2021_Summer" #from SL_RNA_16.01.24_Paper.Rmd
+
+DeseqLFC005 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name_RNA_Deseq2, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "0.05", sep=""), Date, sep="_"), ".rds", sep=""))))
+DeseqLFC1 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name_RNA_Deseq2, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "1", sep=""), Date, sep="_"), ".rds", sep=""))))
+
+```
+
+## 0.4 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the SL_Functions.rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("SL_Functions_16.01.24_Paper.Rmd")
+```
+
+## 0.5 Setup
+
+```{r,  message=FALSE,warning=FALSE}
+traitData<- c(
+    "FultonK", "Length","Weight", 
+    "StomachContent", 
+    "HSI",  "SSI",         
+    "O2","Salinity","SecchiDepth")
+
+#Sample Files
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+
+SAMDF_16S<-dplyr::filter(SAMDF, DNA16S == "yes") 
+rownames(SAMDF_16S) <- SAMDF_16S$SampleID
+
+# Get all IDs present
+SAMDF_RNA_Gill<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Gill) <- SAMDF_RNA_Gill$SampleID
+
+SAMDF_RNA_Liver<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Liver) <- SAMDF_RNA_Liver$SampleID
+
+SAMDF_RNA_Consensus<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Consensus) <- SAMDF_RNA_Consensus$SampleID
+
+OutlineColor <- "grey20" #"white"
+```
+
+## 0.6 Tutorials
+
+```{r,  message=FALSE,warning=FALSE, include=FALSE}
+#Strand et al., 2021
+#https://gitlab.com/M.Strand/Weighted_Host_Microbiome_Correlation_Network
+
+#MixOmics
+#http://mixomics.org/mixmc/mixmc-preprocessing/
+  
+#Microbiome
+#https://microbiome.github.io/tutorials/
+
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+#- 
+
+# 2 Setup
+
+### 2.1 Gill SSU Setup 
+
+```{r,  message=FALSE,warning=FALSE}
+set.seed(123)
+Species    <- "SL"
+Tissue     <- "Gill"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "16S"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+
+save_name_16S <- paste(Species, Year, Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA), save_name_16S, "_.RData")
+
+```
+
+
+
+
+## 2.2 Gill RNA Setup
+
+```{r,  message=FALSE,warning=FALSE}
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+#Read in the female liver data set
+
+set.seed(123)
+Species    <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "RNA"
+Tissue     <- "Gill"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "RNAseq-"
+
+#####################
+Tissue <- "Gill"
+variable <- "Replicates"
+#####################
+
+save_name_RNA_Gill <- paste(Species, Year,Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA, paste(Analysis, "_", sep="")), save_name_RNA_Gill, ".RData")
+
+##################
+#Sample selection#
+##################
+cat(paste(shQuote(SAMDF_RNA_Gill$SampleID, type="cmd"), collapse=", ")) 
+
+# "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Gill_All<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3", "SLSU21MGEB4",  "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6",  "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Gill<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4",                "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+#"SLSU21MGEB5" outlier in sample Clustering
+#"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+#"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+```
+
+## 2.3 Liver RNA Setup
+
+```{r,  message=FALSE,warning=FALSE}
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+#Read in the female liver data set
+
+set.seed(123)
+Species    <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "RNA"
+Tissue     <- "Liver"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "RNAseq-"
+
+#####################
+Tissue <-   "Liver"
+variable <- "Replicates"
+#####################
+
+save_name_RNA_Liver <- paste(Species, Year,Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA, paste(Analysis, "_", sep="")), save_name_RNA_Liver, ".RData")
+
+##################
+#Sample selection#
+##################
+cat(paste(shQuote(SAMDF_RNA_Liver$SampleID, type="cmd"), collapse=", ")) 
+
+# "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Liver_All<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3", "SLSU21MGEB4",  "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6",  "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Liver<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4", "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+#"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+#"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+```
+
+#- 
+
+# 5 Heatmaps
+
+```{r,  Heatmaps, message=FALSE,warning=FALSE}
+library(WGCNA)
+library(tidyverse)
+library(DESeq2)
+options(stringsAsFactors = FALSE);
+
+###########
+#Load data#
+###########
+
+SSUWGCNAlist <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "SSU_List_2", Date, sep="_"), ".rds", sep=""))))
+SSU_Gill_WGCNA <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "SSU_List", Date, sep="_"), ".rds", sep=""))))
+
+RNA_Gill_WGCNA <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "List_3", Date, sep="_"), ".rds", sep=""))))
+
+RNA_Liver_WGCNA <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "List_3", Date, sep="_"), ".rds", sep=""))))
+
+WGCNA_list <- list("SSU_Gill_WGCNA" =SSU_Gill_WGCNA, "RNA_Gill_WGCNA" = RNA_Gill_WGCNA, "RNA_Liver_WGCNA" =RNA_Liver_WGCNA)
+WGCNA_list$SSU_Gill_WGCNA$SSU_Tax <- SSUWGCNAlist
+
+###########
+#Save Data#
+###########
+saveRDS(WGCNA_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+
+WGCNA_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+
+##################
+#Prepare Datasets#
+##################
+  ######
+  #Gill#
+  ######
+  require(WGCNA); require(tidyverse)
+  RNA_MEs_Gill <- RNA_Gill_WGCNA$RNA_Gill_MEs[rownames(RNA_Gill_WGCNA$RNA_Gill_MEs) %in% 
+             intersect(rownames(SSU_Gill_WGCNA$SSU_Gill_MEs), rownames(SSU_Gill_WGCNA$SSU_Gill_MEs)),]
+
+  RNA_MEs_Gill  <- RNA_MEs_Gill %>% dplyr::arrange(factor(rownames(RNA_MEs_Gill), levels = Samples_RNA_Gill))
+  RNA_MEs_Gill <-  orderMEs(RNA_MEs_Gill)
+  names(RNA_MEs_Gill) <- paste("RNA",sub("ME", "", names(RNA_MEs_Gill)), sep="")
+  
+  SSU_MEs_Gill <- SSU_Gill_WGCNA$SSU_Gill_MEs[rownames(SSU_Gill_WGCNA$SSU_Gill_MEs) %in% 
+              intersect(rownames(SSU_Gill_WGCNA$SSU_Gill_MEs), rownames(RNA_Gill_WGCNA$RNA_Gill_MEs)),]
+  SSU_MEs_Gill  <-SSU_MEs_Gill %>% dplyr::arrange(factor(rownames(SSU_MEs_Gill), levels = Samples_RNA_Liver))
+  names(SSU_MEs_Gill) <- paste("SSU",sub("ME", "", names(SSU_MEs_Gill)), sep="")
+  SSUOrder <- c("SSU0","SSU1","SSU2","SSU3","SSU4","SSU5","SSU6","SSU7","SSU8", "SSU9","SSU10","SSU11", "SSU12","SSU13","SSU14")
+  SSU_MEs_Gill <- SSU_MEs_Gill[, order(match(names(SSU_MEs_Gill), SSUOrder))]
+  
+  SAM_MEs_Gill  <- SAMDF_RNA_Gill[rownames(SAMDF_RNA_Gill) %in% rownames(RNA_MEs_Gill),]
+  SAM_MEs_Gill  <- SAM_MEs_Gill %>% dplyr::arrange(factor(rownames(SAM_MEs_Gill), levels = Samples_RNA_Gill))
+  
+  all(rownames(RNA_MEs_Gill) == rownames(SSU_MEs_Gill) & rownames(RNA_MEs_Gill) == rownames(SAM_MEs_Gill))
+
+  #######
+  #Liver#
+  #######
+  RNA_MEs_Liver <- RNA_Liver_WGCNA$RNA_Liver_MEs[rownames(RNA_Liver_WGCNA$RNA_Liver_MEs) %in%
+                   intersect(rownames(SSU_Gill_WGCNA$SSU_Gill_MEs), rownames(SSU_Gill_WGCNA$SSU_Gill_MEs)),]
+  RNA_MEs_Liver  <- RNA_MEs_Liver %>% dplyr::arrange(factor(rownames(RNA_MEs_Liver), levels = Samples_RNA_Liver))
+  RNA_MEs_Liver = orderMEs(RNA_MEs_Liver)
+  names(RNA_MEs_Liver) <- paste("RNA",sub("ME", "", names(RNA_MEs_Liver)), sep="")
+  
+  SSU_MEs_Liver <- SSU_Gill_WGCNA$SSU_Gill_MEs[rownames(SSU_Gill_WGCNA$SSU_Gill_MEs) %in% 
+             intersect(rownames(SSU_Gill_WGCNA$SSU_Gill_MEs), rownames(RNA_Liver_WGCNA$RNA_Liver_MEs)),]
+  SSU_MEs_Liver  <-SSU_MEs_Liver%>% dplyr::arrange(factor(rownames(SSU_MEs_Liver), levels = Samples_RNA_Liver))
+  names(SSU_MEs_Liver) <- paste("SSU",sub("ME", "", names(SSU_MEs_Liver)), sep="")
+  SSUOrder <- c("SSU0","SSU1","SSU2","SSU3","SSU4","SSU5","SSU6","SSU7","SSU8", "SSU9","SSU10","SSU11", "SSU12","SSU13","SSU14")
+  SSU_MEs_Liver <- SSU_MEs_Liver[, order(match(names(SSU_MEs_Liver), SSUOrder))]
+  
+  SAM_MEs_Liver  <- SAMDF_RNA_Liver[rownames(SAMDF_RNA_Liver) %in% rownames(RNA_MEs_Liver),]
+  
+  SAM_MEs_Liver  <- SAM_MEs_Liver %>% dplyr::arrange(factor(rownames(SAM_MEs_Liver), levels = Samples_RNA_Liver))
+  
+  all(rownames(RNA_MEs_Liver) == rownames(SSU_MEs_Liver) & rownames(RNA_MEs_Liver) == rownames(SAM_MEs_Liver))
+  
+  Gill_ME  <- list("RNA_MEs_Gill" = RNA_MEs_Gill, "SSU_MEs_Gill" = SSU_MEs_Gill, "SAM_MEs_Gill" = SAM_MEs_Gill)
+  Liver_ME <- list("RNA_MEs_Liver" = RNA_MEs_Liver, "SSU_MEs_Liver" = SSU_MEs_Liver, "SAM_MEs_Liver" =SAM_MEs_Liver)
+  
+  HeatmapDataset <- list("Gill_ME" = Gill_ME, "Liver_ME" = Liver_ME)
+  
+```
+
+### 5.1 Module_Trait_Correlation_list
+
+```{r,  Module_Trait_Correlation_list, message=FALSE,warning=FALSE}
+traitData<- c(
+    "FultonK", "Length","Weight", 
+    "StomachContent", 
+    "HSI",  "SSI",         
+    "O2","Salinity","SecchiDepth")
+
+ModsOfInterst_list <- list()
+for (WGCNAset in names(WGCNA_list)) {
+    ##############
+    #Create Setup#
+    ##############
+
+      ModsOfInterst_list_length <- length(ModsOfInterst_list)
+      Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+      Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+      omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+      MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+      SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  
+      if (Type != "SSU") {
+      ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))][[1]]
+      }
+  
+      ###############################################################################
+      #Create Dataframes of significant correlation between RNAModules and TraitData#
+      ###############################################################################
+      SAM_traits <- SAM[names(SAM) %in% traitData]
+      SAM_traits <- SAM_traits[, traitData]
+      p.value_matr   <- corr.value_matr <- matrix(ncol = ncol(SAM_traits), 
+                                          nrow = ncol(MEs), 
+                                          dimnames = list(colnames(MEs), 
+                                                          colnames(SAM_traits)))
+      for(ii in 1:ncol(MEs)){
+        for(j in 1:ncol(SAM_traits)){
+          cor.res <- cor.test(MEs[,ii], SAM_traits[,j])
+          p.value_matr[ii, j] <- cor.res$p.value
+          corr.value_matr[ii, j] <- cor.res$estimate
+        }
+      }
+    
+      # Correct for number of tests
+      p.value_matr.adjust <- p.adjust(p.value_matr, method = "fdr")
+      dim(p.value_matr.adjust) <- dim(p.value_matr)
+      dimnames(p.value_matr.adjust) <- list(colnames(MEs), colnames(SAM_traits))
+      
+      # Collect all results into a list.
+      Traits_corr <- list(p_value =as.data.frame(p.value_matr), 
+                            p_value_adj = as.data.frame(p.value_matr.adjust),
+                            correlation = as.data.frame(corr.value_matr))
+      ModsOfInterst <- list()
+        for (iii in names(Traits_corr$correlation)){
+          aa <- length(ModsOfInterst)
+          if (iii %in% c("O2", "SecchiDepth")) {
+            A <- Traits_corr$correlation[iii][Traits_corr$correlation[iii] < 0, , drop=FALSE] 
+            B <- Traits_corr$p_value[iii][Traits_corr$p_value[iii] < 0.05, , drop = FALSE]
+            BB <- B[rownames(B) %in% rownames(A), , drop = FALSE]
+            BBB <- cbind(A[rownames(A) %in% rownames(BB), , drop = FALSE], BB)
+            names(BBB) <- c("correlation", "p_value")
+          }
+          else {
+            BB <- Traits_corr$p_value[iii][Traits_corr$p_value[iii] < 0.05, , drop = FALSE]
+            AA <- Traits_corr$correlation[iii][rownames(Traits_corr$correlation[iii]) %in% 
+                                                 rownames(BB), , drop=FALSE] 
+            BBB <- cbind(AA, BB)
+            names(BBB) <- c("correlation", "p_value")
+          }
+          ModsOfInterst[[aa+1]] <- BBB
+          names(ModsOfInterst)[[aa+1]] <- iii
+          }
+    ModsOfInterst<- Filter(function(df) nrow(df) > 0, ModsOfInterst)
+
+    ModsOfInterst_list[[ModsOfInterst_list_length+1]] <- ModsOfInterst
+    names(ModsOfInterst_list)[[ModsOfInterst_list_length+1]] <- paste("ModsOfInterest", Tissue, Type, sep="_")
+}
+
+###########
+#Save Data#
+###########
+saveRDS(ModsOfInterst_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ModsOfInterst_list", Date, sep="_"), ".rds", sep=""))))
+
+ModsOfInterst_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ModsOfInterst_list", Date, sep="_"), ".rds", sep=""))))
+```
+
+## 5.2 Integrated Heatmap
+
+### - Figure 2 
+
+```{r,  message=FALSE,warning=FALSE, fig.width=14, fig.height=10}
+##########################
+#IntegratedHeatmapDataset# #Full and Subsetted for significant correlation
+##########################
+traitData<- c(
+    "FultonK", "Length","Weight", 
+    "StomachContent", 
+    "HSI",  "SSI",         
+    "O2","Salinity","SecchiDepth")
+
+hmps_list <- list()
+ for (i in names(HeatmapDataset)[grepl("ME", names(HeatmapDataset))]) {
+  g <- i 
+  gg <- sub("_ME", "", g) #print(gg)
+
+    SAM_MEs <- HeatmapDataset[[i]][[paste("SAM_MEs", gg, sep="_")]]
+    SSU_MEs <- HeatmapDataset[[i]][[paste("SSU_MEs", gg, sep="_")]]
+    RNA_MEs <- HeatmapDataset[[i]][[paste("RNA_MEs", gg, sep="_")]]
+    
+    hmps_length <- length(hmps_list)
+        FILENAME    <- paste(paste(Species, Year, Season, Analysis, "IntegratedHeatmap", gg,Date, sep="_"),".png", sep="")
+        
+        WGCNA_IntegratedHeatmap_RK(
+        RNA_MEs = RNA_MEs,
+        SAM_MEs = SAM_MEs,
+        SSU_MEs = SSU_MEs,
+        WIDTH   = 14,
+        HEIGHT  = 10,
+        OutlineColor = "grey20",
+        traitData = traitData)
+     hmps_list[[hmps_length+1]] <- ht_list
+     names(hmps_list)[[hmps_length+1]] <- paste("ht_list", gg, sep="_")
+ 
+    ###############################################################################
+    #Create Dataframes of significant correlation between RNAModules and TraitData#
+    ###############################################################################
+    SAM_MEs_traits <- SAM_MEs[names(SAM_MEs) %in% traitData]
+    SAM_MEs_traits <- SAM_MEs_traits[, traitData]
+    p.value_matr   <- corr.value_matr <- matrix(ncol = ncol(SAM_MEs_traits), 
+                                          nrow = ncol(RNA_MEs), 
+                                          dimnames = list(colnames(RNA_MEs), 
+                                                          colnames(SAM_MEs_traits)))
+    
+    for(ii in 1:ncol(RNA_MEs)){
+      for(j in 1:ncol(SAM_MEs_traits)){
+        if(colnames(SAM_MEs_traits)[j] == "Day"){
+        cor.res <- cor.test(RNA_MEs[,ii], SAM_MEs_traits[,j], method = "spearman", exact = FALSE)
+        p.value_matr[ii, j] <- cor.res$p.value
+        corr.value_matr[ii, j] <- cor.res$estimate
+        } else{
+        cor.res <- cor.test(RNA_MEs[,ii], SAM_MEs_traits[,j])
+        p.value_matr[ii, j] <- cor.res$p.value
+        corr.value_matr[ii, j] <- cor.res$estimate
+      }}}
+    # Correct for number of tests
+    p.value_matr.adjust <- p.adjust(p.value_matr, method = "fdr")
+    dim(p.value_matr.adjust) <- dim(p.value_matr)
+    dimnames(p.value_matr.adjust) <- list(colnames(RNA_MEs), colnames(SAM_MEs_traits))
+    # Collect all results into a list.
+    Traits_corr_RNA <- list(p_value =as.data.frame(p.value_matr), 
+                            p_value_adj = as.data.frame(p.value_matr.adjust),
+                            correlation = as.data.frame(corr.value_matr))
+    
+    ModsOfInterst <- list()
+        for (iii in names(Traits_corr_RNA$correlation)){
+          aa <- length(ModsOfInterst)
+          if (iii %in% c("O2", "SecchiDepth")) {
+            A <- Traits_corr_RNA$correlation[iii][Traits_corr_RNA$correlation[iii] < 0, , drop=FALSE] 
+            B <- Traits_corr_RNA$p_value[iii][Traits_corr_RNA$p_value[iii] < 0.05, , drop = FALSE]
+            BB <- B[rownames(B) %in% rownames(A), , drop = FALSE]
+            BBB <- cbind(A[rownames(A) %in% rownames(BB), , drop = FALSE], BB)
+          }
+          else {
+            BB <- Traits_corr_RNA$p_value[iii][Traits_corr_RNA$p_value[iii] < 0.05, , drop = FALSE]
+            AA <- Traits_corr_RNA$correlation[iii][rownames(Traits_corr_RNA$correlation[iii]) %in% 
+                                                 rownames(BB), , drop=FALSE] 
+            BBB <- cbind(AA, BB)
+          }
+          ModsOfInterst[[aa+1]] <- BBB
+          names(ModsOfInterst)[[aa+1]] <- iii
+          }
+    ModsOfInterst<- Filter(function(df) nrow(df) > 0, ModsOfInterst)
+    
+
+    #print(paste("O2 Correlation", rownames(ModsOfInterst$O2)))
+    cleaned_ModsOfInterst <- list()
+      for (NonZero in names(ModsOfInterst)) {
+        if ("RNA0" %in% rownames(ModsOfInterst[[NonZero]])) {
+        cleaned_ModsOfInterst[[NonZero]] <- 
+          ModsOfInterst[[NonZero]][-which(rownames(ModsOfInterst[[NonZero]]) == "RNA0"), , drop= FALSE]
+        } else {
+        cleaned_ModsOfInterst[[NonZero]] <- ModsOfInterst[[NonZero]]
+        }
+      }
+      ###########################################
+      #Kick out negative correlation to Salinity#
+      cleaned_ModsOfInterst$Salinity <-
+      cleaned_ModsOfInterst$Salinity[cleaned_ModsOfInterst$Salinity[1] > 0, , drop = FALSE]
+ 
+    
+    #######################################
+    #Create Integrated Heatmaps of Subsets#
+    #######################################
+    for (iiii in names(cleaned_ModsOfInterst)) {
+        hmps_length <- length(hmps_list)
+        FILENAME    <- paste(paste(Species, Year, Season, Analysis, "IntegratedHeatmap", gg, iiii, Date, sep="_"),".png", sep="")
+        
+        RNA_MEs_sub <- RNA_MEs[,names(RNA_MEs) %in% rownames(cleaned_ModsOfInterst[[iiii]])]
+        HEIGHT <- 2+0.2*length(rownames(cleaned_ModsOfInterst[[iiii]]))
+        WGCNA_IntegratedHeatmap_RK(
+        RNA_MEs = RNA_MEs_sub,
+        SAM_MEs = SAM_MEs,
+        SSU_MEs = SSU_MEs,
+        WIDTH   = 14,
+        HEIGHT  = HEIGHT,
+        OutlineColor = "grey20",
+        traitData = traitData)
+     hmps_list[[hmps_length+1]] <- ht_list
+     names(hmps_list)[[hmps_length+1]] <- paste("ht_list", gg, iiii, sep="_")
+    }
+  }
+
+#Gill
+hmps_list$ht_list_Gill
+#Liver
+hmps_list$ht_list_Liver
+
+#############################################
+#Combined Liver & Gill For specific Abiotics#
+#############################################
+# prow <- cowplot::plot_grid(grid.grabExpr(ComplexHeatmap::draw(hmps_list$ht_list_Gill_O2, auto_adjust = FALSE, background = "transparent", heatmap_legend_side = "left", annotation_legend_side = "bottom")), grid.grabExpr(ComplexHeatmap::draw(hmps_list$ht_list_Liver_O2, auto_adjust = FALSE, background = "transparent", heatmap_legend_side = "left", annotation_legend_side = "bottom")),
+#                    ncol = 1)
+# ggsave(prow, filename = paste(paste(save_name_RNA_Gill, "SL_Oxy_WGCNA_Integrated_Heatmap", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 14,
+#   height = 9)
+# prow
+```
+
+#-
+
+# 6 Scatter with Kin
+
+Lets check our understanding of these measurements:
+1) kTotal - connectivity of the each gene based on its r-values to all other genes in the whole network
+2) kWithin - connectivity of the each gene within a single module based on its r-values to all other genes within the same module
+3) and 4) kOut and kDiff mathematical derivatives from 1) and 2)
+So, let say WGCNA identified 10 modules, but kWithin for "Module 2" is the largest and obviously larger than kTotal. This suggest "Module 2" to be a core of the network, or more important. Let say You perform functional annotation of the genes in this module and will find them to be enriched in amino acid analysis. And Your study was dedicated to metabolic changes under some conditions. So You can make conclusion that Your condition strongly affects AA metabolism, and via it - whole network.
+In contrast, high kOut can suggest that total connectivity is much larger that connectivity within modules, and I would say - reflects sort of network's stability under tested conditions. So a set of vertices with high kOut can be targets for annotation as hubs that determined this stability. And elimination of them (knockout mutations, for example) can break the whole network.
+
+
+```{r,  message=FALSE,warning=FALSE}
+st_Gill_RNA  <- 6
+st_Liver_RNA <- 3
+st_Gill_SSU  <- 6
+traitData<- c(
+    "FultonK", "Length","Weight",
+    "HSI","SSI",              
+    "O2","Salinity","SecchiDepth")
+
+#####################
+#Create Degrees_list#
+#####################
+degrees_list <- list()
+for (WGCNAset in names(WGCNA_list)) {
+  require(WGCNA)
+  a <- length(degrees_list)
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+  MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))]
+  moduleColors <- WGCNA_list[[WGCNAset]][grepl("moduleColors", names(WGCNA_list[[WGCNAset]]))][[1]]
+  moduleLabels <- WGCNA_list[[WGCNAset]][grepl("moduleLabels", names(WGCNA_list[[WGCNAset]]))][[1]]
+  
+  module_size<- as.data.frame(table(moduleLabels))
+  colnames(module_size) <- c("Module", "Size")
+  module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+  
+  
+  if (Tissue == "Liver" && Type == "RNA") {st <- st_Liver_RNA
+  } else if (Tissue == "Gill" && Type == "RNA") {st <- st_Gill_RNA
+  } else if (Tissue == "Gill" && Type == "SSU") {st <- st_Gill_SSU
+  } else {st <- NA }
+
+  #print(st)
+  
+  degrees <- intramodularConnectivity.fromExpr(as.data.frame(omics_data), colors = moduleColors, power = st,
+                                             networkType = "signed", distFnc = "bicor")
+  
+  degrees_list[[a+1]] <- degrees
+  names(degrees_list)[[a+1]] <- paste("degrees", Tissue, Type, sep="_")
+ }
+# A correlation coefficient of . 10 is thought to represent a weak or small association; a correlation coefficient of . 30 is considered a moderate correlation; and a correlation coefficient of . 50 or larger is thought to represent a strong or large correlation.
+
+###########
+#Save Data#
+###########
+saveRDS(degrees_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "degrees_list", Date, sep="_"), ".rds", sep=""))))
+
+degrees_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "degrees_list", Date, sep="_"), ".rds", sep=""))))
+
+################################################
+#Scatter GS vs ModuleMembership over all Traits#
+################################################
+
+scatter_list <- list()
+for (WGCNAset in names(WGCNA_list)) {
+
+    ##############
+    #Create Setup#
+    ##############
+    tryCatch({
+
+    a <- length(scatter_list)
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+
+    omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+    MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+    SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+
+    if (Type != "SSU") {
+    ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))][[1]]
+    }
+
+    moduleColors <- WGCNA_list[[WGCNAset]][grepl("moduleColors", names(WGCNA_list[[WGCNAset]]))][[1]]
+    moduleLabels <- WGCNA_list[[WGCNAset]][grepl("moduleLabels", names(WGCNA_list[[WGCNAset]]))][[1]]
+
+    module_size<- as.data.frame(table(moduleLabels))
+    colnames(module_size) <- c("Module", "Size")
+    module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+
+    degrees <- degrees_list[[paste("degrees", Tissue, Type, sep="_")]]
+
+
+    ###############################################################################
+    #Create Dataframes of significant correlation between RNAModules and TraitData#
+    ###############################################################################
+    SAM_traits <- SAM[names(SAM) %in% traitData]
+    SAM_traits <- SAM_traits[, traitData]
+    p.value_matr   <- corr.value_matr <- matrix(ncol = ncol(SAM_traits),
+                                          nrow = ncol(MEs),
+                                          dimnames = list(colnames(MEs),
+                                                          colnames(SAM_traits)))
+
+    for(ii in 1:ncol(MEs)){
+      for(j in 1:ncol(SAM_traits)){
+        cor.res <- cor.test(MEs[,ii], SAM_traits[,j])
+        p.value_matr[ii, j] <- cor.res$p.value
+        corr.value_matr[ii, j] <- cor.res$estimate
+      }
+    }
+    # Correct for number of tests
+    p.value_matr.adjust <- p.adjust(p.value_matr, method = "fdr")
+    dim(p.value_matr.adjust) <- dim(p.value_matr)
+    dimnames(p.value_matr.adjust) <- list(colnames(MEs), colnames(SAM_traits))
+    # Collect all results into a list.
+    Traits_corr <- list(p_value =as.data.frame(p.value_matr),
+                            p_value_adj = as.data.frame(p.value_matr.adjust),
+                            correlation = as.data.frame(corr.value_matr))
+
+
+
+    ModsOfInterst <- list()
+        for (iii in names(Traits_corr$correlation)){
+          aa <- length(ModsOfInterst)
+          if (iii %in% c("O2", "SecchiDepth")) {
+            A <- Traits_corr$correlation[iii][Traits_corr$correlation[iii] < 0, , drop=FALSE]
+            B <- Traits_corr$p_value[iii][Traits_corr$p_value[iii] < 0.05, , drop = FALSE]
+            BB <- B[rownames(B) %in% rownames(A), , drop = FALSE]
+          }
+          else {
+            BB <- Traits_corr$p_value[iii][Traits_corr$p_value[iii] < 0.05, , drop = FALSE]
+          }
+          ModsOfInterst[[aa+1]] <- BB
+          names(ModsOfInterst)[[aa+1]] <- iii
+          }
+    ModsOfInterst<- Filter(function(df) nrow(df) > 0, ModsOfInterst)
+
+
+    #########################################
+    #Loop Trough all the traits in traitData#
+    #########################################
+      TraitOfInterest_list <- list()
+      for (TraitOfInterest in traitData) {
+        tryCatch({
+        TraitOfInterest_list_length <- length(TraitOfInterest_list)
+
+        #print(paste(TraitOfInterest, "Correlation", rownames(ModsOfInterst[[TraitOfInterest]])))
+
+        # Specific column name and row names to subset by
+        column_name <- colnames(ModsOfInterst[[TraitOfInterest]])
+        row_names_to_subset <- rownames(ModsOfInterst[[TraitOfInterest]])
+        # Function to subset and bind data frames
+        subset_and_bind <- function(df) {
+        subset_df <- df[row_names_to_subset, column_name, drop = FALSE]
+        return(subset_df)}
+
+        subset_dataframes <- lapply(Traits_corr, subset_and_bind)
+        subset_dataframes <- lapply(names(subset_dataframes), function(item_name) {
+        df <- subset_dataframes[[item_name]]
+        colnames(df) <- paste(colnames(df), item_name,  sep = "_")
+        return(df)})
+        result_dataframe <- do.call(cbind, subset_dataframes)
+
+        result_dataframe <- dplyr::left_join(result_dataframe %>%
+          mutate(rowname = rownames(.)),  module_size |> mutate(rowname = paste("ME", Module, sep="")))
+        #print(head(result_dataframe))
+
+        #############################################################################
+        #Creating GeneMembership and GeneSignificance Dataframes with GeneAnnotation#
+        #############################################################################
+        result_dataframe_list <- list()
+          for (i in result_dataframe$rowname) {
+            aa <- length(result_dataframe_list)
+            MODULE  <- i
+            g <- i
+            gg <- sub("ME", "", g); print(gg)
+            modNames = names(MEs) #substring(names(MEs), 2)
+            #print(paste(MODULE, "vs", TraitOfInterest, sep=" "))
+            column = match(MODULE, modNames);
+            moduleGenes <- moduleLabels[moduleLabels == sub("ME","", MODULE)]
+
+            nSamples = nrow(omics_data)
+            # Define variable K containing the K column of datTrait
+            TraitOfInterest_dat = as.data.frame(SAM[TraitOfInterest]);
+            names(TraitOfInterest_dat) = paste(TraitOfInterest)
+            # names (colors) of the modules
+            #Calculate Module Membership
+            geneModuleMembership = as.data.frame(cor(omics_data, MEs, use = "p"));
+            MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+            names(geneModuleMembership) = paste("MM", modNames, sep="");
+            names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+            #Calculate Gene Significance
+            geneTraitSignificance = as.data.frame(cor(omics_data, TraitOfInterest_dat, use = "p"));
+            GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+            names(geneTraitSignificance) = paste("GS.", names(TraitOfInterest_dat), sep="");
+            names(GSPvalue) = paste("p.GS.", names(TraitOfInterest_dat), sep="");
+
+            #Make all positive Dataframe for  <- Not for this Plot!
+            GenSig <-geneTraitSignificance
+            GenSig$Geneid <-row.names(GenSig)
+            #GenSig[,names(GenSig) %in% paste("GS.", TraitOfInterest, sep="")] <-abs(GenSig[,names(GenSig) %in%
+            #                                                                  paste("GS.", TraitOfInterest, sep="")])
+
+            GenSig <- dplyr::left_join(GenSig, GSPvalue %>% mutate(Geneid = rownames(.)))
+            #head(GenSig)
+
+          if (Type != "SSU") {
+        GenSig <- dplyr::left_join(GenSig[GenSig$Geneid %in% names(moduleGenes),], ANNO[[paste("GeneAnno_", i, sep="")]])
+        }
+        if (Type == "SSU") {
+        GenSig <- GenSig[GenSig$Geneid %in% names(moduleGenes),]
+        }
+
+
+        A <- dplyr::left_join(GenSig, abs(geneModuleMembership[names(moduleGenes),
+                          paste("MM", i, sep=""), drop = FALSE]) %>% mutate(Geneid = rownames(.)))
+
+
+        names(A)[names(A) == paste("MM", i, sep="")] <- "ModuleMembership"
+        #A <- as.data.frame(cbind(abs(geneModuleMembership[names(moduleGenes), paste("MM", i, sep="")]), A))
+        A$Module_color <- result_dataframe[result_dataframe$rowname == i,]$Module_color
+        #head(A)
+
+        result_dataframe_list[[aa+1]] <- A
+        names(result_dataframe_list)[[aa+1]] <- paste(i, TraitOfInterest, sep="_")
+      }
+
+        B <- do.call(rbind, result_dataframe_list)
+        B$Modules <- sub("\\..*","",rownames(B)); rownames(B) <-NULL
+        #head(B)
+
+        connectivity <- cbind(degrees, moduleColors, geneModuleMembership)
+
+        BB <- left_join(B,connectivity %>% mutate(Geneid = rownames(.)))
+        BBB <- BB[BB$Module_color !="grey",]
+        head(BBB)
+        BBB$Modules <- sub(paste("_", TraitOfInterest, sep=""), "", BBB$Modules)
+        BBB$Modules <- sub("ME", "", BBB$Modules)
+
+        names(BBB) <- gsub(TraitOfInterest, "", names(BBB))
+        BBB$TraitOfInterest <- TraitOfInterest
+
+        if (Type != "SSU") {
+        BBB$Modules <- paste("RNA", BBB$Modules, sep="")
+        } else if (Type == "SSU") {
+        BBB$Modules <- paste("SSU", BBB$Modules, sep="")
+        }
+        }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+
+        ######
+        #Plot#
+        ######
+        require(cowplot)
+        tryCatch({
+        #if (OperatingSystem == "Mac" ) {quartz() }
+        FILENAME    <- paste(paste(Species, Year, Season, Analysis, Tissue, Type, "MultiModuleScatter-kwithin", TraitOfInterest, sep="_"),
+                          ".png", sep="")
+
+      plot <- ggplot(data = BBB, aes(x = ModuleMembership, y = BBB[[1]])) +
+        geom_point(aes(colour = Module_color, size = kWithin), alpha = 0.5) +
+        scale_size_continuous(range = c(0.4, 4)) +  # Adjust the size range
+        xlab(paste("Module Membership", sep = " ")) +
+        ylab(paste("Gene significance for", TraitOfInterest, sep = " ")) +
+        labs(title = paste(Tissue, Type, "Module Membership vs. Gene Significance"),
+        color = "sig. Modules") +
+        scale_color_identity(guide = 'legend',
+                       breaks = unique(BBB$Module_color),
+                       labels = unique(BBB$Modules)) +
+        geom_hline(yintercept = 0, color = "red", linetype = "dashed")
+
+      if (Type != "SSU") {
+        plot <- plot + ggrepel::geom_text_repel(
+          data = BBB, size = 2.5, aes(label = GeneSymbolHS), color = OutlineColor)
+      } else if (Type == "SSU") {
+        plot <- plot + ggrepel::geom_text_repel(
+        data = BBB, size = 2.5, aes(label = Geneid), color = OutlineColor)
+      }
+        plot <- plot + theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+        theme(
+          panel.grid.major = element_line(colour = "grey50"),
+          panel.grid.minor = element_line(colour = "grey50"),
+          legend.position = "right")
+
+        ggsave(plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 5, height = 5)
+        
+          ##################
+          #Plot a selection#
+          ##################
+           if (TraitOfInterest %in% c("O2", "Salinity", "SecchiDepth")) {
+            plot(plot)
+            } else {
+            #print("Plots are saved to the pathPlots")
+            }
+
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+
+
+      TraitOfInterest_list[[TraitOfInterest_list_length+1]] <- BBB
+      names(TraitOfInterest_list)[[TraitOfInterest_list_length+1]] <- TraitOfInterest
+      }
+
+      scatter_list[[a+1]] <- TraitOfInterest_list
+      names(scatter_list)[[a+1]] <- paste("Scatter", Type, Tissue,  sep="_")
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+
+###########
+#Save Data#
+###########
+saveRDS(scatter_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "scatter_list", Date, sep="_"), ".rds", sep=""))))
+
+scatter_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "scatter_list", Date, sep="_"), ".rds", sep=""))))
+```
+
+
+## 6.1 Bacteria Immune Correlation 
+
+```{r,  message=FALSE,warning=FALSE}
+################################################
+#Select Immune-relevant Modules in Host-Tissues#
+################################################
+
+#Modules with KEGG & GO Enrichments related to immune response
+Liver_Immune <- c(2, 3, 4, 7, 8)
+Gill_Immune <- c(1, 2, 7, 11, 14, 16, 17)
+
+ImmuneList <- list("Gill_Immune" = Gill_Immune, "Liver_Immune" = Liver_Immune)
+immune_list <- list()
+immune_scatter_list <- list()
+
+for (WGCNAset in names(WGCNA_list)[grepl("RNA_", names(WGCNA_list))]) {
+
+  require(WGCNA)
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  RNA_MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  
+  SSU  <- WGCNA_list[["SSU_Gill_WGCNA"]]
+  
+  omics_data <- as.data.frame(WGCNA_list[["SSU_Gill_WGCNA"]][grepl("omics_data",
+                                        names(WGCNA_list[["SSU_Gill_WGCNA"]]))][[1]])
+    omics_data  <- omics_data %>% dplyr::arrange(factor(rownames(omics_data), levels = rownames(RNA_MEs)))
+
+  
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <-SAM %>% dplyr::arrange(factor(rownames(SAM), levels = rownames(RNA_MEs)))
+  ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))]
+  
+  moduleColors <- WGCNA_list[["SSU_Gill_WGCNA"]][grepl("moduleColors", names(WGCNA_list[["SSU_Gill_WGCNA"]]))][[1]]
+  moduleLabels <- WGCNA_list[["SSU_Gill_WGCNA"]][grepl("moduleLabels", names(WGCNA_list[["SSU_Gill_WGCNA"]]))][[1]]
+  
+  RNA_MEs_Immune <- RNA_MEs[names(RNA_MEs) %in% paste("ME", ImmuneList[[paste(Tissue, "Immune", sep="_")]], sep="")]
+  names(RNA_MEs_Immune) <- paste("RNA", sub("ME", "", names(RNA_MEs_Immune)), sep="")
+  
+  omics_data <- omics_data[rownames(omics_data) %in% rownames(RNA_MEs_Immune),]
+  SSU_MEs    <- SSU$SSU_Gill_MEs[rownames(SSU$SSU_Gill_MEs) %in% rownames(RNA_MEs_Immune),]
+    SSU_MEs  <-SSU_MEs%>% dplyr::arrange(factor(rownames(SSU_MEs), levels = rownames(RNA_MEs)))
+    names(SSU_MEs) <- paste("SSU", sub("ME", "", names(SSU_MEs)), sep="")
+  
+  module_size<- as.data.frame(table(moduleLabels))
+  colnames(module_size) <- c("Module", "Size")
+  module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size       
+  
+  #################
+  #Cor-Mat RNA-SSU#
+  #################
+  #print("Cor-Mat RNA-SSU")
+  p.value_matr <- corr.value_matr <- matrix(ncol = ncol(SSU_MEs), nrow = ncol(RNA_MEs), 
+                                          dimnames = list(colnames(RNA_MEs), colnames(SSU_MEs)))
+  for(ii in 1:ncol(RNA_MEs)){
+    for(j in 1:ncol(SSU_MEs)){
+      cor.res <- cor.test(RNA_MEs[,ii], SSU_MEs[,j])
+      p.value_matr[ii, j] <- cor.res$p.value
+      corr.value_matr[ii, j] <- cor.res$estimate
+    }
+  }
+  # Correct for number of tests
+  p.value_matr.adjust <- p.adjust(p.value_matr, method = "fdr")
+  dim(p.value_matr.adjust) <- dim(p.value_matr)
+  dimnames(p.value_matr.adjust) <- list(colnames(RNA_MEs), colnames(SSU_MEs))
+
+  # Collect all results into a list.
+  SSU_corr_RNA <- list(p_value = p.value_matr, 
+                 p_value_adj = p.value_matr.adjust,
+                 correlation = corr.value_matr)
+  
+  Sig_SSUs <- 
+    as.data.frame(SSU_corr_RNA$p_value[paste("ME", ImmuneList[[paste(Tissue, "Immune", sep="_")]], sep=""),]) %>%
+  dplyr::select_if(~ any(. < 0.05))
+  Sig_SSUs<- Sig_SSUs[names(Sig_SSUs) != "SSU0"]
+  
+  ############################################
+  #Create Taxa Significance to Immune Modules#
+  ############################################
+  result_dataframe_list <- list()
+    for (i in names(SSU_MEs)) {
+      for (j in names(RNA_MEs_Immune)){
+      aa <- length(result_dataframe_list)
+        MODULE  <- i
+        g <- i 
+        gg <- sub("SSU", "", g); print(gg)
+      modNames = names(SSU_MEs) 
+      #print(paste(MODULE, "vs", j, sep=" "))
+      column = match(MODULE, modNames);
+      moduleGenes <- moduleLabels[moduleLabels == sub("SSU","", MODULE)]
+
+    nSamples = nrow(omics_data)
+    # Define variable K containing the K column of datTrait
+    TraitOfInterest_dat = as.data.frame(RNA_MEs_Immune[j])
+    names(TraitOfInterest_dat) = paste(j)
+    # names (colors) of the modules
+    #Calculate Module Membership
+    geneModuleMembership = as.data.frame(cor(omics_data, SSU_MEs, use = "p"));
+    MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+    names(geneModuleMembership) = paste("MM", modNames, sep="");
+    names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+    #Calculate Gene Significance 
+    geneTraitSignificance = as.data.frame(cor(omics_data, TraitOfInterest_dat, use = "p"));
+    GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+    names(geneTraitSignificance) = paste("GS.")
+    names(GSPvalue) = paste("p.GS.")
+  
+    #Make all positive Dataframe for  <- Not for this Plot!
+    GenSig <-geneTraitSignificance
+    GenSig$Geneid <-row.names(GenSig)
+    #GenSig[,names(GenSig) %in% paste("GS.", TraitOfInterest, sep="")] <-abs(GenSig[,names(GenSig) %in% 
+    #                                                                  paste("GS.", TraitOfInterest, sep="")])
+    GenSig <- dplyr::left_join(GenSig, GSPvalue %>% mutate(Geneid = rownames(.)))
+    #head(GenSig)
+    GenSig <- GenSig[GenSig$Geneid %in% names(moduleGenes),]
+    
+    A <- dplyr::left_join(GenSig, abs(geneModuleMembership[names(moduleGenes), 
+                          paste("MM", i, sep=""), drop = FALSE]) %>% mutate(Geneid = rownames(.)))
+    
+    names(A)[names(A) == paste("MM", i, sep="")] <- "ModuleMembership"
+    A$SSU_Module <- paste(i)
+    A$RNA_Module <- paste(j)
+    A <- dplyr::left_join(A,module_size[module_size$Module %in% sub("SSU","", i),] |> 
+                            mutate(SSU_Module = paste("SSU", Module, sep=""))) 
+    #head(A)
+  
+    result_dataframe_list[[aa+1]] <- A
+    names(result_dataframe_list)[[aa+1]] <- paste(i, j, sep="_")
+      }
+    }
+   
+    B <- do.call(rbind, result_dataframe_list) 
+    B$Modules <- sub("\\..*","",rownames(B)); rownames(B) <-NULL
+    #head(B)
+
+    geneModuleMembership = as.data.frame(cor(as.data.frame(WGCNA_list[["SSU_Gill_WGCNA"]][grepl("omics_data",
+                                        names(WGCNA_list[["SSU_Gill_WGCNA"]]))][[1]]), 
+                                        as.data.frame(WGCNA_list[["SSU_Gill_WGCNA"]][grepl("MEs",
+                                        names(WGCNA_list[["SSU_Gill_WGCNA"]]))][[1]]), use = "p"));
+    MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+    names(geneModuleMembership) = paste("MM", modNames, sep="");
+    names(MMPvalue) = paste("p.MM", modNames, sep="");
+    
+    connectivity <- cbind(degrees_list$degrees_Gill_SSU, moduleColors, geneModuleMembership)
+  
+    BB <- left_join(B,connectivity %>% mutate(Geneid = rownames(.)))
+    BBB <- BB[BB$SSU_Module %in% names(Sig_SSUs),]
+    
+  
+  
+    for (k in unique(BBB$RNA_Module)) {
+      require(cowplot)
+        tryCatch({
+
+        FILENAME    <-paste("WGCNA-ModuleScatter-kwithin_SSU_Immune",Species,Tissue, k, sep="_")
+        BBBB <- BBB[BBB$RNA_Module  %in% k, ]
+        SSU_Counts <- SSU$SSU_Tax$All[-which(names(SSU$SSU_Tax$All) %in% "values")]
+        BBBBB <- left_join(BBBB, SSU_Counts[rownames(SSU_Counts) %in% BBBB$Geneid, ] %>%
+                              mutate(Geneid = rownames(.)))
+         a <- length(immune_list)
+         immune_list[[a+1]] <- BBBBB 
+         names(immune_list)[[a+1]] <- paste("GS", Tissue, k, sep="_")
+         
+          plot <- ggplot(data = BBBB, aes(x = ModuleMembership, y = GS.)) + 
+          geom_point(aes(colour = Module_color, size = kWithin), alpha = 0.7) +
+          scale_size_continuous(range = c(1, 8)) +  # Adjust the size range
+          xlab(paste("Module Membership", sep = " ")) + 
+          ylab(paste("Node significance for", Tissue, k, sep = " ")) +
+          labs(title = paste("Module Membership vs. Node Significance to", Tissue, k),
+          color = "sig. Modules") +
+          scale_color_identity(guide = 'legend', 
+                       breaks = unique(BBBB$Module_color), 
+                       labels = unique(BBBB$SSU_Module)) +
+          geom_hline(yintercept = 0, color = "red", linetype = "dashed")
+          plot <- plot + ggrepel::geom_text_repel(
+          data = BBBB, size = 2.5, aes(label = Geneid), color = "grey10")
+        
+          plot <- plot + theme_minimal() + 
+            #atheme + 
+            atheme +
+            theme(axis.title.x = element_blank()) +
+            theme(
+            panel.grid.major = element_line(colour = "grey50"), 
+            panel.grid.minor = element_line(colour = "grey50"),
+            legend.position = "right")
+  
+      #ggsave(plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 7, height = 7)
+      
+          immune_scatter_list_length <- length(immune_scatter_list)
+          immune_scatter_list[[immune_scatter_list_length+1]] <- plot
+          names(immune_scatter_list)[[immune_scatter_list_length+1]] <- paste("GS", Tissue, k, sep="_")
+      
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    }
+    
+}
+
+
+###########
+#Save Data#
+###########
+saveRDS(immune_scatter_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "immune_scatter_list", Date, sep="_"), ".rds", sep=""))))
+
+immune_scatter_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "immune_scatter_list", Date, sep="_"), ".rds", sep=""))))
+```
+
+### - Figure 4A
+
+```{r,  message=FALSE,warning=FALSE}
+#immune_scatter_list$GS_Gill_RNA7
+
+Tissue="Gill"
+GS_RNA_SSU <- immune_list$GS_Gill_RNA7
+ subset_df <- GS_RNA_SSU %>%
+    dplyr::group_by(SSU_Module) #%>%
+#     dplyr::filter(p.GS. < 0.05, GS. > 0.3) 
+#subset_df$Geneid
+BacteriaHostCorrelatonPlot <- ggplot(data = subset_df, aes(x = ModuleMembership, y = GS.)) + 
+          geom_point(aes(colour = Module_color, size = kWithin), alpha = 0.7) +
+          scale_size_continuous(range = c(1, 8)) +  # Adjust the size range
+          xlab(paste("Module Membership", sep = " ")) + 
+          ylab(paste("Correlation to", Tissue, subset_df$RNA_Module[1], sep = " ")) +
+          labs(title = paste("Bacterial abundance correlated to host Gill-", subset_df$RNA_Module[1],
+                             sep=""),
+          color = "sig. Modules") +
+          scale_color_identity(guide = 'legend', 
+                       breaks = unique(subset_df$Module_color), 
+                       labels = unique(subset_df$SSU_Module)) +
+          geom_hline(yintercept = 0, color = "red", linetype = "dashed")
+          BacteriaHostCorrelatonPlot <- BacteriaHostCorrelatonPlot + ggrepel::geom_text_repel(
+          data = subset_df, size = 3, aes(label = Geneid), color = OutlineColor) #white
+        
+          BacteriaHostCorrelatonPlot <- BacteriaHostCorrelatonPlot + theme_minimal() + 
+          atheme+
+          #atheme + 
+          theme(axis.title.x = element_blank()) +
+          theme(
+          panel.grid.major = element_line(colour = "grey50"), 
+          panel.grid.minor = element_line(colour = "grey50"),
+          legend.position = "right", 
+          legend.title = element_text( size = 10, face = "bold"),
+          legend.text = element_text(size = 12,face = "bold"), 
+          axis.text.x.bottom = element_text(size = 10, face = "bold", angle = 45, hjust = 1),
+          axis.text.y.left = element_text(size = 10, face = "bold"))
+  
+      ggsave(BacteriaHostCorrelatonPlot, filename = paste(paste(Species, Year, Season, Analysis, "GS_SSU", Tissue, subset_df$Modules[1], sep="_"), ".png", sep="") , path = pathPlots, device='png', dpi=300, width = 7, height = 5)
+      
+BacteriaHostCorrelatonPlot
+```
+
+### 6.1.1 Holobiont Dataframe
+
+```{r,  message=FALSE,warning=FALSE}
+immune_list_filtered <- list()
+for (GS_Immune in names(immune_list)) {   
+    require(phyloseq)
+    immune_list_filtered_length <- length(immune_list_filtered )
+    
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", GS_Immune)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", GS_Immune)
+  
+    GS_RNA_SSU <- immune_list[[GS_Immune]]  
+    subset_df <- GS_RNA_SSU %>%
+    dplyr::group_by(SSU_Module) %>%
+    dplyr::filter(p.GS. < 0.05, GS. > 0.3)   
+    
+    subset_df <- as.data.frame(subset_df)
+    subset_df<-  subset_df %>%
+      dplyr::arrange(Genus, desc(GS.)) #SSU_Module, 
+      WF_counts <- as.data.frame(t(otu_table(pslist$ps_SLWF_21))) %>% 
+      dplyr::select("WFSU21MLFL", "WFSU21SSFL", "WFSU21MGEB", "WFSU21BBEB")  %>%
+      dplyr::mutate("ASV" = rownames(.))
+      
+      subset_df<- left_join(subset_df,WF_counts )
+      
+      ps_SLWF_21_relAbund <- pslist$ps_SLWF_21 %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})
+        SSU_counts_rel <- as.data.frame(t(otu_table(ps_SLWF_21_relAbund))) 
+        names(SSU_counts_rel) <- paste(names(SSU_counts_rel), "rel", sep="")
+        SSU_counts_rel <- SSU_counts_rel %>%  mutate("ASV" = rownames(.))  %>% as.data.frame()
+        
+      subset_df<- left_join(subset_df,SSU_counts_rel)
+  
+    #############
+    #Save as CSV#
+    #############
+    write.csv2(as.data.frame(subset_df), file = paste0(file.path(path_Output_WGCNA, 
+                paste(paste(Species, Year, Analysis, Tissue, paste(unique(subset_df$RNA_Module)), "SSU_vs_HostRNA_Correlation", sep="_"), 
+                      "csv", sep="."))))
+    
+    immune_list_filtered[[immune_list_filtered_length+1]] <- subset_df
+    names(immune_list_filtered)[[immune_list_filtered_length+1]] <- paste(GS_Immune, "filtered", sep="_")
+}
+    
+
+head(immune_list_filtered$GS_Gill_RNA7_filtered, 2)
+head(immune_list_filtered$GS_Gill_RNA11_filtered, 2)
+
+Venn_list_Gill<- list("Gill-RNA7" = unique(sub(".*:", "", immune_list_filtered$GS_Gill_RNA7_filtered$Geneid)), "Gill-RNA11" = unique(sub(".*:", "", immune_list_filtered$GS_Gill_RNA11_filtered$Geneid)))
+
+Venn_Gill_GS_SSU<- ggVennDiagram::ggVennDiagram(Venn_list_Gill, edge_size=1, set_size = 5) + theme(legend.position = "none") +scale_x_continuous(expand = expansion(mult = .2)) + theme(panel.background = element_blank())
+ggsave(Venn_Gill_GS_SSU, filename = paste(paste(Species, Year, Season, Analysis, "Venn_Gill_GS_SSU", Date, sep="_"), "Figure_4A.png", sep=""), path = pathPlots , device='png', dpi=300, width = 5, height = 5)
+    
+
+intersect(Venn_list_Gill$`Gill-RNA7`, Venn_list_Gill$`Gill-RNA11`)
+setdiff(Venn_list_Gill$`Gill-RNA7`, Venn_list_Gill$`Gill-RNA11`)   
+setdiff(Venn_list_Gill$`Gill-RNA11`, Venn_list_Gill$`Gill-RNA7`)   
+
+```
+
+## 6.2 Annotated Scatter
+
+```{r,  message=FALSE,warning=FALSE}
+degrees_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "degrees_list", Date, sep="_"), ".rds", sep=""))))
+
+annotated_scatter_list <- list()
+for (WGCNAset in names(WGCNA_list)) {
+  tryCatch({
+   a <- length(annotated_scatter_list)
+  
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  
+  omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+  MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  
+  if (Type != "SSU") {
+  ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))][[1]]
+  }
+  
+  moduleColors <- WGCNA_list[[WGCNAset]][grepl("moduleColors", names(WGCNA_list[[WGCNAset]]))][[1]]
+  moduleLabels <- WGCNA_list[[WGCNAset]][grepl("moduleLabels", names(WGCNA_list[[WGCNAset]]))][[1]]
+  
+  module_size<- as.data.frame(table(moduleLabels))
+  colnames(module_size) <- c("Module", "Size")
+  module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+  
+  degrees <- degrees_list[[paste("degrees", Tissue, Type, sep="_")]]
+  
+    ###############################################################################
+    #Create Dataframes of significant correlation between RNAModules and TraitData#
+    ###############################################################################
+   InterestingComparison <- ModsOfInterst_list[[grep(paste(Tissue, Type, sep="_"), names(ModsOfInterst_list))]]
+   InterestingComparison <- lapply(InterestingComparison, rownames_to_column)
+   InterestingComparison <- do.call(rbind, lapply(names(InterestingComparison), function(name) {
+   data.frame(name, InterestingComparison[[name]], stringsAsFactors = FALSE)}))
+   names(InterestingComparison) <- c("variable", "module", "correlation", "p_value")
+   InterestingComparison <- InterestingComparison[InterestingComparison$module != "ME0", ]
+   #InterestingComparison$module <- paste(sub("ME",Type, InterestingComparison$module))
+   
+
+   
+  TraitOfInterest_list <- list()
+  for (TraitOfInterest in unique(InterestingComparison$variable)) {
+    TraitOfInterest_list_length <- length(TraitOfInterest_list)
+    
+    
+    ############################################################################# 
+    #Creating GeneMembership and GeneSignificance Dataframes with GeneAnnotation#
+    ############################################################################# 
+    result_dataframe <- InterestingComparison[InterestingComparison$variable %in% TraitOfInterest,]
+    result_dataframe_list <- list()
+    for (i in result_dataframe$module) {
+    aa <- length(result_dataframe_list)
+      MODULE  <- i
+      g <- i 
+      gg <- sub("ME", "", g); print(gg)
+    modNames = names(MEs) #substring(names(MEs), 2)
+    #print(paste(MODULE, "vs", TraitOfInterest, sep=" "))
+    column = match(MODULE, modNames);
+    moduleGenes <- moduleLabels[moduleLabels == sub("ME","", MODULE)]
+
+    nSamples = nrow(omics_data)
+    # Define variable K containing the K column of datTrait
+    TraitOfInterest_dat = as.data.frame(SAM[TraitOfInterest]);
+    names(TraitOfInterest_dat) = paste(TraitOfInterest)
+    # names (colors) of the modules
+    #Calculate Module Membership
+    geneMM = as.data.frame(cor(omics_data, MEs, use = "p"));
+    MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneMM), nSamples));
+    names(geneMM) = paste("MM", modNames, sep="");
+    names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+    geneModuleMembership<- geneMM[,names(geneMM) %in% paste("MM", MODULE, sep=""), drop = F]
+    MMPvalue <- MMPvalue[,names(MMPvalue) %in% paste("p.MM", MODULE, sep=""), drop = F]
+    geneModuleMembership <- left_join(geneModuleMembership  %>% mutate(Geneid = rownames(.)), MMPvalue %>% mutate(Geneid = rownames(.)))
+    
+    #Calculate Gene Significance 
+    geneTraitSignificance = as.data.frame(cor(omics_data, TraitOfInterest_dat, use = "p"));
+    GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+    names(geneTraitSignificance) = paste("GS.", names(TraitOfInterest_dat), sep="");
+    names(GSPvalue) = paste("p.GS.", names(TraitOfInterest_dat), sep="");
+  
+    #Make all positive Dataframe for  <- Not for this Plot!
+    GenSig <-geneTraitSignificance
+    GenSig$Geneid <-row.names(GenSig)
+    #GenSig[,names(GenSig) %in% paste("GS.", TraitOfInterest, sep="")] <-abs(GenSig[,names(GenSig) %in% 
+    #                                                                  paste("GS.", TraitOfInterest, sep="")])
+    
+    GenSig <- dplyr::left_join(GenSig, GSPvalue %>% mutate(Geneid = rownames(.)))
+    #head(GenSig)
+    
+     if (Type != "SSU") {
+    GenSig <- dplyr::left_join(GenSig[GenSig$Geneid %in% names(moduleGenes),], ANNO[[paste("GeneAnno_", i, sep="")]])
+     }
+      if (Type == "SSU") {
+    GenSig <- GenSig[GenSig$Geneid %in% names(moduleGenes),]
+     }
+  
+    
+    A <- dplyr::left_join(GenSig, geneModuleMembership[geneModuleMembership$Geneid %in% names(moduleGenes),])
+
+    names(A)[names(A) == paste("MM", i, sep="")] <- "ModuleMembership"
+    names(A)[names(A) == paste("p.MM", i, sep="")] <- "p.ModuleMembership"
+    
+    A$Module <- MODULE
+    
+    
+    A$Module_color <-  module_size[module_size$Module %in% sub("ME", "", MODULE),]$Module_color
+    A$Size <-  module_size[module_size$Module %in% sub("ME", "", MODULE),]$Size
+    #head(A)
+
+    
+    result_dataframe_list[[aa+1]] <- A
+    names(result_dataframe_list)[[aa+1]] <- paste(i, TraitOfInterest, sep="_")
+  }
+   
+    B <- do.call(rbind, result_dataframe_list) 
+    B$Modules <- sub("\\..*","",rownames(B)); rownames(B) <-NULL
+    #head(B)
+
+    connectivity <- cbind(degrees, moduleColors, names(moduleLabels), geneMM)
+    connectivity <- connectivity[,names(connectivity) %in% names(degrees)]
+    
+  
+    
+    BB <- left_join(B,connectivity  %>% mutate(Geneid = rownames(.)))
+    
+    BBB <- BB[BB$Module_color !="grey",]
+    head(BBB)
+    BBB$Modules <- sub(paste("_", TraitOfInterest, sep=""), "", BBB$Modules)
+    BBB$Modules <- sub("ME", "", BBB$Modules)
+    if (Type != "SSU") {
+        BBB$Modules <- paste("RNA", BBB$Modules, sep="")
+      } else if (Type == "SSU") {
+        BBB$Modules <- paste("SSU", BBB$Modules, sep="")
+      }
+    
+      ######
+      #Plot#
+      ######
+      for (Mods in unique(BBB$Modules)) {
+      BBBB <- BBB[BBB$Modules %in% Mods,]
+      require(cowplot)
+      tryCatch({
+      #if (OperatingSystem == "Mac" ) {quartz() }
+        
+        
+      FILENAME    <-paste(paste(Species, Year, Season, Analysis, Tissue, Type,"ModuleScatter-kwithin", TraitOfInterest, Mods, sep="_"),".png", sep="")
+      
+      plot <- ggplot(data = BBBB, aes(x = ModuleMembership, y = BBBB[[paste("GS.",TraitOfInterest, sep="")]])) + 
+        geom_point(aes(colour = Module_color, size = kWithin), alpha = 0.5) +
+        scale_size_continuous(range = c(0.4, 4)) +  # Adjust the size range
+        xlab(paste("Module Membership", sep = " ")) + 
+        ylab(paste("Gene significance for", TraitOfInterest, sep = " ")) +
+        labs(title = paste(Tissue, Mods, "Module Membership", "vs.", "Gene Significance"),
+        color = "sig. Modules") +
+        scale_color_identity(guide = 'legend', 
+                       breaks = unique(BBBB$Module_color), 
+                       labels = unique(BBBB$Modules)) +
+        geom_hline(yintercept = 0, color = "red", linetype = "dashed")
+        
+      if (Type != "SSU") {
+        plot <- plot + ggrepel::geom_text_repel(
+          data = BBBB, size = 2.5, aes(label = GeneSymbolHS), color = OutlineColor)
+      } else if (Type == "SSU") {
+        plot <- plot + ggrepel::geom_text_repel(
+        data = BBBB, size = 2.5, aes(label = Geneid), color = OutlineColor)
+      }
+        plot <- plot + theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+        theme(
+          panel.grid.major = element_line(colour = "grey50"), 
+          panel.grid.minor = element_line(colour = "grey50"),
+          legend.position = "right")
+  
+      ggsave(plot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 5, height = 5)
+      
+       ##################
+       #Plot a selection#
+       ##################
+           if (Mods %in% c("RNA2")) {
+            plot(plot)
+           } else if (Mods %in% c("SSU2")) {
+              plot(plot)
+           } else {
+            #print("Plots are saved to the pathPlots")
+           }
+      
+      
+      
+      
+      
+      
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")}) }
+
+      TraitOfInterest_list[[TraitOfInterest_list_length+1]] <- BBB
+      names(TraitOfInterest_list)[[TraitOfInterest_list_length+1]] <- TraitOfInterest
+      }
+    
+  annotated_scatter_list[[a+1]] <- TraitOfInterest_list  
+  names(annotated_scatter_list)[[a+1]] <- paste("Scatter", Type, Tissue,  sep="_")
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+###########
+#Save Data#
+###########
+saveRDS(annotated_scatter_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "annotated_scatter_list", Date, sep="_"), ".rds", sep=""))))
+
+# scatter_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "annotated_scatter_list", Date, sep="_"), ".rds", sep=""))))
+```
+
+
+# -
+
+# 7 ORA 
+
+## 7.1 ORA centrality filter
+
+```{r,  message=FALSE, warning=FALSE, fig.width=12, fig.height=10}
+# A correlation coefficient of . 10 is thought to represent a weak or small association; a correlation coefficient of . 30 is considered a moderate correlation; and a correlation coefficient of . 50 or larger is thought to represent a strong or large correlation.
+
+################
+#ORA with plots# Loop
+################
+st_Gill_RNA  <- 6
+st_Liver_RNA <- 3
+st_Gill_SSU  <- 6
+
+WGCNA_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+
+degrees_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "degrees_list", Date, sep="_"), ".rds", sep=""))))
+
+#TPM Data
+
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+  
+Corr_Filter <- 0.8
+ORA_list <- list()
+for (WGCNAset in names(WGCNA_list)[grepl("RNA", names(WGCNA_list))]) {
+  tryCatch({
+    require(tidyverse); require(WGCNA)
+    require(clusterProfiler)
+  
+  print(WGCNAset)
+  ORA_list_length <- length(ORA_list)
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+  MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  TPM  <- tpms[[names(tpms)[grepl(Tissue, names(tpms))]]]
+  TPM <- TPM[names(TPM) %in% rownames(SAM)]
+  rownames(TPM) <-gsub("[[:punct:]&&[^_]]|-", ".", rownames(TPM))
+  
+
+  if (Type != "SSU") {
+  ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))][[1]]
+  }
+  
+  moduleColors <- WGCNA_list[[WGCNAset]][grepl("moduleColors", names(WGCNA_list[[WGCNAset]]))][[1]]
+  moduleLabels <- WGCNA_list[[WGCNAset]][grepl("moduleLabels", names(WGCNA_list[[WGCNAset]]))][[1]]
+  
+  module_size<- as.data.frame(table(moduleLabels))
+  colnames(module_size) <- c("Module", "Size")
+  module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+  
+  degrees <- degrees_list[[paste("degrees", Tissue, Type, sep="_")]]
+
+  ############################################################################# 
+  #Creating GeneMembership and GeneSignificance Dataframes with GeneAnnotation#
+  ############################################################################# 
+  result_dataframe_list <- list()
+    for (i in names(MEs)) {
+    aa <- length(result_dataframe_list)
+      MODULE  <- i
+      g <- i 
+      gg <- sub("ME", "", g) #print(gg)
+    modNames = names(MEs) #substring(names(MEs), 2)
+    column = match(MODULE, modNames);
+    moduleGenes <- moduleLabels[moduleLabels == sub("ME","", MODULE)]
+
+    nSamples = nrow(omics_data)
+
+    # names (colors) of the modules
+    #Calculate Module Membership
+    geneModuleMembership = as.data.frame(cor(omics_data, MEs, use = "p"));
+    MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+    names(geneModuleMembership) = paste("MM", modNames, sep="");
+    names(MMPvalue) = paste("p.MM", modNames, sep="");
+    MMPvalue$Geneid <-row.names(MMPvalue)
+    head(MMPvalue)
+    
+     if (Type != "SSU") {
+    MMPvalue<- dplyr::left_join(MMPvalue[MMPvalue$Geneid %in% names(moduleGenes),],
+                                            ANNO[[paste("GeneAnno_", i, sep="")]])
+     }
+      if (Type == "SSU") {
+    MMPvalue <- MMPvalue[MMPvalue$Geneid %in% names(moduleGenes),]
+     }
+
+    MMPvalue$Module_color <- module_size[module_size$Module == paste(sub("ME","",i)),]$Module_color
+    head(MMPvalue)
+    
+    result_dataframe_list[[aa+1]] <- MMPvalue
+    names(result_dataframe_list)[[aa+1]] <- paste(i, sep="_")
+    }
+   
+    # B <- do.call(rbind, result_dataframe_list) 
+    # B$Modules <- sub("\\..*","",rownames(B)); rownames(B) <-NULL
+    # head(B)
+
+    #add additional information on connectivity etc...
+    connectivity <- cbind(degrees, moduleColors, geneModuleMembership)
+    for (ii in names(result_dataframe_list)) {
+      result_dataframe_list[[ii]] <- left_join(result_dataframe_list[[ii]], connectivity %>% 
+                                                 mutate(Geneid = rownames(.)))
+    }
+    
+    #Subset for correlation
+    print(Corr_Filter)
+    result_dataframe_list_corr <-list()
+    for (ii in names(result_dataframe_list)) {
+      aaa <- length(result_dataframe_list_corr)
+      result_dataframe_list_corr[[aaa+1]] <-
+        result_dataframe_list[[ii]][abs(result_dataframe_list[[ii]][paste("MMME", sub("ME","", ii), sep="")]) > Corr_Filter,]
+      names(result_dataframe_list_corr)[[aaa+1]] <- ii
+    } 
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")}) 
+
+    
+    EGOS <- list()
+    KEGGS <- list()
+    for (MODULE in names(result_dataframe_list_corr)) {
+      tryCatch({
+      egoUp <- data_frame()
+      KEGGUp <- data_frame()
+      
+      a             <- length(EGOS)
+
+      FILENAME      <- paste(Species, Year, Season, Type, Tissue, Analysis, "ORA_Corr_Filter", Corr_Filter, sep="_")
+      
+      TITLE         <- paste("ORA_Corr_Filter", Corr_Filter, Species, Type, Tissue, sep="_" )
+
+      dedup_ids<- result_dataframe_list_corr[[MODULE]] 
+      
+       WGCNAORAPlotRKwhite6SLUC(TPM = TPM, vst = vst, Species = Species, TPM_value = 1, 
+                               Samples = rownames(SAM), 
+                               SAMDF = SAM, TITLE = TITLE, filename= FILENAME, module = sub("ME", "RNA", MODULE),
+                               dedup_ids = dedup_ids)
+   
+      ##################
+      #Plot a selection#
+      ##################
+      if (Type == "RNA" & Tissue == "Gill" & MODULE %in% c("ME2", "ME7", "ME11")) {
+        plot(KEGG_plot)
+      } else if (Tissue == "Liver" & MODULE %in% c("ME1", "ME3", "ME6")) {
+        plot(KEGG_plot)
+      } else {
+      # print("Plots are saved to the pathPlots")
+      }
+       
+      
+    EGOS[[a+1]] <- egoUp
+    names(EGOS)[[a+1]] <- paste("ego", MODULE, sep="_")
+    KEGGS[[a+1]] <- KEGGUp
+    names(KEGGS)[[a+1]] <- paste("kegg", MODULE, sep="_")
+
+    #Remove Empty list elements
+    #sapply(EGOS,dim)
+    EGOS <- EGOS[lengths(EGOS) > 0]
+    filtered_list <- map(EGOS, ~ filter(.x, Count != 0))
+    # Remove empty list elements
+    EGOS <- keep(filtered_list, ~ nrow(.) > 0)
+    #sapply(EGOS,dim)
+  
+    #sapply(KEGGS,dim)
+    KEGGS <- KEGGS[lengths(KEGGS) > 0]
+    filtered_list <- map(KEGGS, ~ filter(.x, Count != 0))
+    # Remove empty list elements
+    KEGGS <- keep(filtered_list, ~ nrow(.) > 0)
+    #sapply(KEGGS,dim)
+    
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+    } 
+    
+    
+  
+  WGCNA_MODULES_Corr_Filter <-list("EGOS" = EGOS,"KEGGS"=KEGGS)
+  #print(sapply(WGCNA_MODULES_Corr_Filter$EGOS ,dim))
+  #print(sapply(WGCNA_MODULES_Corr_Filter$KEGGS ,dim))
+  
+  ORA_list[[ORA_list_length+1]]  <- WGCNA_MODULES_Corr_Filter
+  names(ORA_list)[[ORA_list_length+1]] <- paste(Tissue, Type, "WGCNA_MODULES_Corr_Filter", Corr_Filter, sep="_")
+}
+```
+
+### 7.1.1 GO & KEGG Parent-Child-SLIMS
+
+
+https://www.biostars.org/p/294268/
+https://support.bioconductor.org/p/p134359/
+https://www.informatics.jax.org/vocab/gene_ontology/GO:0046130
+http://geneontology.org/docs/faq/#slims
+
+Mapping granular annotations of a set of genes to one or more high-level, broader parent terms is referred to as “GO slimming”. GO slimming is commonly used to report an overview of a genome or to a set of summarize experimental results. GO hosts a number of predefined slim sets, a generic GO slim, and a number of slims tailored to give good coverage for some well studied/annotated model species. GO slimming will only be successful if the organism of interest has a body of GO annotation in the GO database (either electronic or manual). 
+
+What are the file formats used by the Gene Ontology?
+Ontology files are available in OBO, OWL, and some files are available in JSON. Refer to the ontology downloads page for information on ontology files.
+
+Annotations are available in GAF (Gene Association File), or by the companion files Gene Product Association Data (GPAD) + Gene Product Information (GPI). For general introduction to the Gene Ontology’s annotation file formats, see GAF 2.2 and GPAD file format/GPI file pages.
+
+https://support.bioconductor.org/p/128407/
+
+```{r,  message=FALSE,warning=FALSE}
+#BiocManager::install("GSEABase")
+#BiocManager::install("GOfuncR")
+#install.packages("ontologyIndex")
+
+#Download GO SLIM#
+#http://geneontology.org/docs/download-ontology/ 
+#Move obo dataset into GSEAbase package library
+#mv /Users/admin/Downloads/goslim_agr.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+#mv /Users/admin/Downloads/goslim_mouse.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+
+
+for (WGCNAset in names(ORA_list)) {
+  
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    g <- WGCNAset
+    ########
+    #SLIMGO#
+    ########
+    Tissue_EGO_List <- ORA_list[[WGCNAset]]$EGOS
+    Tissue_EGO_List <- Tissue_EGO_List[sapply(Tissue_EGO_List, function(x) length(x) > 0)]
+      SLIMGO_mouse <-list()
+        for (ii in names(Tissue_EGO_List)) {
+        require(GSEABase)
+        a <- length(SLIMGO_mouse)
+        # Vector of GO IDs
+        go_ids <- Tissue_EGO_List[[ii]]$ID
+        # Create GSEAbase GOCollection using `go_ids`
+        myCollection <- GOCollection(go_ids)
+        # Retrieve GOslims from GO OBO file set
+        #slim <- getOBOCollection(gseabase_files)
+        #Download GO SLIM#
+        #http://geneontology.org/docs/download-ontology/ 
+        #Move obo dataset into GSEAbase package library
+        #mv /Users/admin/Downloads/goslim_agr.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    #mv /Users/admin/Downloads/goslim_mouse.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    fl <- system.file("extdata", "goslim_mouse.obo", package="GSEABase")
+    slim <- getOBOCollection(fl)
+    slimdf <- goSlim(myCollection, slim, "BP", verbose)
+    # List of GOslims and all GO IDs from `go_ids`
+    gomap <- as.list(GOBPOFFSPRING[rownames(slimdf)])
+    # Maps `go_ids` to matching GOslims
+    mapped <- lapply(gomap, intersect, ids(myCollection))
+    # Append all mapped GO IDs to `slimdf`
+    # `sapply` needed to apply paste() to create semi-colon delimited values
+    slimdf$ids <- sapply(lapply(gomap, intersect, ids(myCollection)), paste, collapse=";")
+    # Remove "character(0) string from "ids" column
+    slimdf$ids[slimdf$ids == "character(0)"] <- ""
+    #https://support.bioconductor.org/p/128407/ credits to SamWhite
+    # Add self-matching GOIDs to "ids" column, if not present
+    for (go_id in go_ids) {
+    # Check if the go_id is present in the row names
+      if (go_id %in% rownames(slimdf)) {
+      # Check if the go_id is not present in the ids column
+      # Also removes white space "trimws()" and converts all to upper case to handle
+      # any weird, "invisible" formatting issues.
+        if (!go_id %in% trimws(toupper(strsplit(slimdf[go_id, "ids"], ";")[[1]]))) {
+        # Append the go_id to the ids column with a semi-colon separator
+          if (length(slimdf$ids) > 0 && nchar(slimdf$ids[nrow(slimdf)]) > 0) {
+          slimdf[go_id, "ids"] <- paste0(slimdf[go_id, "ids"], "; ", go_id)
+          } else {
+          slimdf[go_id, "ids"] <- go_id 
+          }}}}
+    rm(go_id)
+    
+  SLIMGO_mouse[[a+1]] <- slimdf
+  names(SLIMGO_mouse)[[a+1]] <- paste("slim", ii, sep="_")
+    rm(slimdf)
+    rm(a)
+        }
+      
+      SLIMGO_generic<-list()
+        for (iii in names(Tissue_EGO_List)) {
+  require(GSEABase)
+  a <- length(SLIMGO_generic)
+    # Vector of GO IDs
+    go_ids <- Tissue_EGO_List[[iii]]$ID
+    # Create GSEAbase GOCollection using `go_ids`
+    myCollection <- GOCollection(go_ids)
+    # Retrieve GOslims from GO OBO file set
+    #slim <- getOBOCollection(gseabase_files)
+    #Download GO SLIM#
+    #http://geneontology.org/docs/download-ontology/ 
+    #Move obo dataset into GSEAbase package library
+    #mv /Users/admin/Downloads/goslim_agr.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    #mv /Users/admin/Downloads/goslim_mouse.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    fl <- system.file("extdata", "goslim_generic.obo", package="GSEABase")
+    slim <- getOBOCollection(fl)
+    slimdf <- goSlim(myCollection, slim, "BP", verbose)
+    # List of GOslims and all GO IDs from `go_ids`
+    gomap <- as.list(GOBPOFFSPRING[rownames(slimdf)])
+    # Maps `go_ids` to matching GOslims
+    mapped <- lapply(gomap, intersect, ids(myCollection))
+    # Append all mapped GO IDs to `slimdf`
+    # `sapply` needed to apply paste() to create semi-colon delimited values
+    slimdf$ids <- sapply(lapply(gomap, intersect, ids(myCollection)), paste, collapse=";")
+    # Remove "character(0) string from "ids" column
+    slimdf$ids[slimdf$ids == "character(0)"] <- ""
+    #https://support.bioconductor.org/p/128407/ credits to SamWhite
+    # Add self-matching GOIDs to "ids" column, if not present
+    for (go_id in go_ids) {
+    # Check if the go_id is present in the row names
+      if (go_id %in% rownames(slimdf)) {
+      # Check if the go_id is not present in the ids column
+      # Also removes white space "trimws()" and converts all to upper case to handle
+      # any weird, "invisible" formatting issues.
+        if (!go_id %in% trimws(toupper(strsplit(slimdf[go_id, "ids"], ";")[[1]]))) {
+        # Append the go_id to the ids column with a semi-colon separator
+          if (length(slimdf$ids) > 0 && nchar(slimdf$ids[nrow(slimdf)]) > 0) {
+          slimdf[go_id, "ids"] <- paste0(slimdf[go_id, "ids"], "; ", go_id)
+          } else {
+          slimdf[go_id, "ids"] <- go_id 
+          rm(go_id)
+          }}}}
+    
+  SLIMGO_generic[[a+1]] <- slimdf
+  names(SLIMGO_generic)[[a+1]] <- paste("slim", iii, sep="_")
+      rm(slimdf)
+      rm(a)
+        }
+      
+    #   SLIMGO_pir<-list()
+    #     for (iiii in names(Tissue_EGO_List )) {
+    #     require(GSEABase)
+    #     a <- length(SLIMGO_pir)
+    #     # Vector of GO IDs
+    #     go_ids <- Tissue_EGO_List[[iiii]]$ID
+    #     # Create GSEAbase GOCollection using `go_ids`
+    #     myCollection <- GOCollection(go_ids)
+    #     # Retrieve GOslims from GO OBO file set
+    #     #slim <- getOBOCollection(gseabase_files)
+    #     #Download GO SLIM#
+    #     #http://geneontology.org/docs/download-ontology/ 
+    #     #Move obo dataset into GSEAbase package library
+    #     #mv /Users/admin/Downloads/goslim_agr.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    # #mv /Users/admin/Downloads/goslim_mouse.obo /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/library/GSEABase/extdata
+    #     fl <- system.file("extdata", "goslim_pir.obo", package="GSEABase")
+    #     slim <- getOBOCollection(fl)
+    #     slimdf <- goSlim(myCollection, slim, "BP", verbose)
+    #     # List of GOslims and all GO IDs from `go_ids`
+    #     gomap <- as.list(GOBPOFFSPRING[rownames(slimdf)])
+    #     # Maps `go_ids` to matching GOslims
+    #     mapped <- lapply(gomap, intersect, ids(myCollection))
+    #     # Append all mapped GO IDs to `slimdf`
+    #     # `sapply` needed to apply paste() to create semi-colon delimited values
+    #     slimdf$ids <- sapply(lapply(gomap, intersect, ids(myCollection)), paste, collapse=";")
+    #     # Remove "character(0) string from "ids" column
+    #     slimdf$ids[slimdf$ids == "character(0)"] <- ""
+    #     #https://support.bioconductor.org/p/128407/ credits to SamWhite
+    #     # Add self-matching GOIDs to "ids" column, if not present
+    #     for (go_id in go_ids) {
+    #     # Check if the go_id is present in the row names
+    #     if (go_id %in% rownames(slimdf)) {
+    #     # Check if the go_id is not present in the ids column
+    #     # Also removes white space "trimws()" and converts all to upper case to handle
+    #     # any weird, "invisible" formatting issues.
+    #     if (!go_id %in% trimws(toupper(strsplit(slimdf[go_id, "ids"], ";")[[1]]))) {
+    #     # Append the go_id to the ids column with a semi-colon separator
+    #       if (length(slimdf$ids) > 0 && nchar(slimdf$ids[nrow(slimdf)]) > 0) {
+    #       slimdf[go_id, "ids"] <- paste0(slimdf[go_id, "ids"], "; ", go_id)
+    #       } else {
+    #       slimdf[go_id, "ids"] <- go_id 
+    #       }}}}
+    # rm(go_id)
+    # SLIMGO_pir[[a+1]] <- slimdf
+    # names(SLIMGO_pir)[[a+1]] <- paste("slim", iiii, sep="_")
+    # rm(slimdf)
+    # rm(a)
+    #}
+      
+      #Clean Data#
+      # Remove empty list elements
+      SLIMGO_mouse <- keep(map(SLIMGO_mouse, ~ filter(.x, Count != 0)), ~ nrow(.) > 0)
+      #sapply(SLIMGO_mouse,dim)
+      SLIMGO_generic <- keep(map(SLIMGO_generic, ~ filter(.x, Count != 0)), ~ nrow(.) > 0)
+      #sapply(SLIMGO_generic,dim)
+      #SLIMGO_pir <- keep(map(SLIMGO_pir, ~ filter(.x, Count != 0)), ~ nrow(.) > 0)
+      #sapply(SLIMGO_pir,dim)
+    
+    ##########
+    #SLIMKEGG#
+    ##########
+    KeggPathwayMapsGenes <- readRDS(file = paste0(file.path(path_Input_RNA, 
+                                            "KeggPathwayMapsGenes08.05.2023"), ".rds"))
+    KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+   
+    Tissue_KEGG_List <- ORA_list[[g]]$KEGGS
+    Tissue_KEGG_List <- Tissue_KEGG_List[sapply(Tissue_KEGG_List, function(x) length(x) > 0)]
+      
+      SLIMKEGG<-list()
+      for (x in names(Tissue_KEGG_List)) {
+        aa <- length(SLIMKEGG)
+        A <- as.data.frame(Tissue_KEGG_List[[x]])
+        A <- dplyr::left_join(A, KeggPathwayMapsGenes[KeggPathwayMapsGenes$ID %in% A$ID,])
+        SLIMKEGG[[aa+1]] <- A
+        names(SLIMKEGG)[[aa+1]] <- paste("slim", x, sep="_")
+      }
+  
+      #sapply(SLIMKEGG ,dim)
+      filtered_list <- map(SLIMKEGG, ~ filter(.x, Count != 0))
+      # Remove empty list elements
+      SLIMKEGG <- keep(filtered_list, ~ nrow(.) > 0)
+      #sapply(SLIMKEGG,dim)
+      
+      
+      ORA_list[[WGCNAset]]$SLIMGO_mouse    <- SLIMGO_mouse
+      ORA_list[[WGCNAset]]$SLIMGO_generic  <- SLIMGO_generic
+      #ORA_list[[WGCNAset]]$SLIMGO_pir      <- SLIMGO_pir
+      ORA_list[[WGCNAset]]$SLIMKEGG        <- SLIMKEGG
+}
+
+
+
+###########
+#Save Data#
+###########
+###########
+#Save Data#
+###########
+saveRDS(ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Gill", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+saveRDS(ORA_list$Liver_RNA_WGCNA_MODULES_Corr_Filter_0.8, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Liver", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+
+
+ORA_list <- list()
+ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8 <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Gill", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+ORA_list$Liver_RNA_WGCNA_MODULES_Corr_Filter_0.8 <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Liver", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+```
+
+#### 7.1.1.1. Write CSV
+
+```{r,  message=FALSE, warning=FALSE}
+
+for (WGCNAset in names(ORA_list)) {
+
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub(paste0(".*", "(Corr_Filter....)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub("Corr_Filter_", "", Corr_Filter)
+    
+    
+    GeneAnno <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("GeneAnno",
+                  names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]]
+  
+    WGCNAset_list <- ORA_list[[WGCNAset]]
+  
+    for (i in names(WGCNAset_list)[grepl("SLIMKEGG", names(WGCNAset_list))]) {
+      require(org.Hs.eg.db)
+      SLIMKEGG <-  WGCNAset_list[[i]]
+      
+      #Just to add in readbale geneSymbols for the EntrezID
+      for (ii in names(SLIMKEGG)) {
+        
+        MODULE <- sub("slim_kegg_", "", ii)
+        ANNO  <- GeneAnno[[which(sub("GeneAnno_", "", names(GeneAnno)) %in% MODULE)]]
+        
+        df_Keggs <- as.data.frame(SLIMKEGG[[ii]])
+        geneID_split <- str_split(df_Keggs$geneID, "/")
+        GeneSymbols <- character(length(geneID_split))
+      
+        for (x in 1:length(geneID_split)) {
+        HS <- AnnotationDbi::select(org.Hs.eg.db, as.character(geneID_split[[x]]), "SYMBOL", "ENTREZID")
+        GeneSymbols[x] <- paste(HS$SYMBOL, collapse = "/")}
+      
+        GeneSymbolsSL <- character(length(geneID_split))
+        for (x in 1:length(geneID_split)) {
+        trial <- left_join(data.frame(ENTREZID = geneID_split[[x]]), ANNO) 
+        names(trial)[names(trial) == "Geneid"] <- "SLgeneID"
+        GeneSymbolsSL[x] <- paste(trial$SLgeneID, collapse = "/")
+        }
+        
+        GeneSymbolsSLunmapped <- character(length(geneID_split))
+        for (x in 1:length(geneID_split)) {
+        GeneSymbolsSLunmapped[x] <- paste(ANNO[is.na(ANNO$ENTREZID), ]$GeneSymbolHS, collapse = "/")
+        }
+        df_Keggs$GeneSymbolHS <- GeneSymbols
+        df_Keggs$GeneSymbolSL <- GeneSymbolsSL
+        df_Keggs$UnMapped     <- GeneSymbolsSLunmapped
+      
+    #Save as CSV
+    write.csv2(df_Keggs, file = paste0(file.path(path_Output_WGCNA,paste(paste(Species, Year, Season, Analysis, Tissue, "Corr_filter", Corr_Filter,  sub("ME", "RNA",ii), sep="_"), "csv", sep="."))))
+   }
+  }
+}
+```
+
+## 7.2 Visualize Module Pathways
+
+### 7.2.1 KEGG Module Pathways cross tissue 
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=14}
+
+
+ WGCNA_KEGG_SLIMS <- list(
+      "Gill_Slim" =ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8$SLIMKEGG, 
+      "Liver_Slim" = ORA_list$Liver_RNA_WGCNA_MODULES_Corr_Filter_0.8$SLIMKEGG)   
+    
+#######################
+#Gill & Liver Combined#
+#######################
+Slims <- list()
+for (i in names(WGCNA_KEGG_SLIMS)[grepl("Gill|Liver", names(WGCNA_KEGG_SLIMS))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({  
+  a           <- length(Slims )
+  g           <- paste(i)
+  gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+
+  A <- WGCNA_KEGG_SLIMS[[i]]
+  #Add the KeggPathwayMaps
+  KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+  for (ii in names(A)) {
+  A[[ii]] <- dplyr::left_join(A[[ii]], KeggPathwayMapsGenes[KeggPathwayMapsGenes$ID %in% A[[ii]]$ID,])}
+  B <- do.call(rbind.data.frame, A)
+  
+  #Including or Excluding Unknown Pathways in the Slim 
+  #These were not included in the Kegg-Slim so I dont know how many genes would relate to them, this is just a dircrepancy in timing between last Kegg database reading and Slim-download
+   B[is.na(B$Parent),]
+   B <-  B[B$Description != "Efferocytosis",]
+   B <-  B[B$Description != "ATP-dependent chromatin remodeling",]
+   B <-  B[B$Description != "Polycomb repressive complex",]
+   B[is.na(B$Parent),]
+  # UnknownParents <- c("ATP-dependent chromatin remodeling", "Polycomb repressive complex")
+  # for (x in UnknownParents ) {
+  #  B[B$Description == x,]$Parent <- 
+  #  B[B$Description == x,]$category
+  #  
+  #  B[B$Description == x,]$Child <- 
+  #  B[B$Description == x,]$subcategory
+  # }
+  #  B[is.na(B$Parent),]
+
+ 
+
+  B$Modules <- sub("\\..*","",rownames(B))
+  B$Modules <- sub("slim_kegg_","",B$Modules)
+  rownames(B) <- NULL
+
+    trial <- as.data.frame(B %>% 
+    dplyr::group_by(Modules, Child) %>% 
+      dplyr::summarise(GeneCount = length(unique(as.vector(unique(unlist(str_split(geneID, "/"))))))))
+    trial2 <- as.data.frame(B %>% 
+      dplyr::group_by(Child) %>% 
+      dplyr::summarise(ChildGeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+    trial3 <- dplyr::left_join(trial, trial2)
+    trial3$ModuleRatio <- trial3$GeneCount / trial3$ChildGeneCount * 100
+  
+  B <- dplyr::left_join(B, trial3)
+  B$PathwayActivation <- -log2(B$p.adjust)
+  #BB <- BB[c("Modules", "Description", "GeneRatio", "p.adjust", "Child", "Parent", "ModuleRatio")]
+  B$Modules <- paste("RNA", sub("ME", "", B$Modules), sep="")
+  B$Tissue <- paste(gg)
+  B$ModulesTissue <- paste(gg, B$Modules, sep="_")
+  
+  #Select only Enrichment that are correlated (0.3) to the abipotics and physiology and exclude module 0
+   InterestingComparison <- ModsOfInterst_list[[grep(paste(gg, "RNA", sep="_"), names(ModsOfInterst_list))]]
+   InterestingComparison <- lapply(InterestingComparison, rownames_to_column)
+   InterestingComparison <- do.call(rbind, lapply(names(InterestingComparison), function(name) {
+   data.frame(name, InterestingComparison[[name]], stringsAsFactors = FALSE)}))
+   names(InterestingComparison) <- c("variable", "module", "correlation", "p_value")
+   InterestingComparison$module <- paste(sub("ME","RNA", InterestingComparison$module))
+   InterestingComparison <- InterestingComparison[InterestingComparison$module != "RNA0", ]
+  
+   BB <- B
+   BB <- BB[BB$Modules %in% unique(InterestingComparison$module),]
+ 
+  b <- length(Slims)
+  Slims[[b+1]] <- BB
+  names(Slims)[[b+1]] <- gg  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})} 
+  
+Slim <- do.call(rbind.data.frame, Slims)
+rownames(Slim) <- c()
+
+Order <- c("Gill", "Liver")
+mg <- ggplot(Slim, aes(x = Modules, y = Child, color=PathwayActivation, size = ModuleRatio)) + geom_point() + scale_size(range = c(1, 15)) 
+#scale_color_manual(colours = c("blue",  "red")) 
+#scale_colour_manual(values=c("blue",  "red"))
+mg <- mg + facet_grid(Parent ~ factor(Tissue, levels=Order), scales = "free", space = "free") + 
+  scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                        values = scales::rescale(x = c(0, 1, 5, 15), to = c(0,1), from = c(0, 15) )) +
+  
+  guides(color = guide_legend(title = "-log2(p_adjust)"), size = guide_legend(title = "-log2(p_adjust)")) +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("salmon", "darkred"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+        
+ggsave(AA, filename = paste(paste(Species, Year, Season, Analysis, "Slim_Tissues_KEGGPathway", sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12,height = 9)
+
+```
+
+### 7.2.2 Tissue specific KEGG
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+######
+#KEGG#
+######
+KeggPathwayMapsGenes <- readRDS(file = paste0(file.path(path_Input_RNA, 
+                                            "KeggPathwayMapsGenes08.05.2023"), ".rds"))
+KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+KeggPathwayMapsGenes$PathwayGeneID <- KeggPathwayMapsGenes$GeneID
+KeggPathwayMapsGenes$PathwaySymbol <- KeggPathwayMapsGenes$Symbol
+
+B <- do.call(rbind.data.frame, ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8$SLIMKEGG)
+unique(B$Parent)
+B$Modules <- gsub("\\..*","",rownames(B))
+B$Modules <- gsub("slim_kegg_","",B$Modules)
+B <- B[B$Modules != "ME0",]
+
+rownames(B) <- NULL
+trial <- as.data.frame(B %>% 
+    dplyr::group_by(Modules, Child) %>% dplyr::summarise(GeneCount = length(unique(as.vector(unique(unlist(str_split(geneID, "/"))))))))
+    
+trial2 <- as.data.frame(B %>% 
+    dplyr::group_by(Child) %>% 
+    dplyr::summarise(ChildGeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+trial3 <- dplyr::left_join(trial, trial2)
+trial3$ModuleRatio <- trial3$GeneCount / trial3$ChildGeneCount * 100
+
+B <- dplyr::left_join(B, trial3)
+B$PathwayActivation <- -log2(B$p.adjust)
+
+BB <- B
+BB <- BB[c("Modules", "Description", "GeneRatio", "p.adjust", "Child", "Parent", "ModuleRatio", "PathwayActivation")]
+BB$Modules <- paste("RNA", sub("ME", "", BB$Modules), sep="")
+BB <- BB[BB$Modules != "RNA0",]
+
+
+
+  #Select only Enrichment that are correlated (0.3) to the abipotics and physiology and exclude module 0
+   InterestingComparison <- ModsOfInterst_list[[grep(paste(gg, "RNA", sep="_"), names(ModsOfInterst_list))]]
+   InterestingComparison <- lapply(InterestingComparison, rownames_to_column)
+   InterestingComparison <- do.call(rbind, lapply(names(InterestingComparison), function(name) {
+   data.frame(name, InterestingComparison[[name]], stringsAsFactors = FALSE)}))
+   names(InterestingComparison) <- c("variable", "module", "correlation", "p_value")
+   InterestingComparison$module <- paste(sub("ME","RNA", InterestingComparison$module))
+   InterestingComparison <- InterestingComparison[InterestingComparison$module != "RNA0", ]
+
+
+
+
+BB$CorrelationToTraits <-ifelse(BB$Modules %in% InterestingComparison$name, "Cor > 0.3", "Cor < 0.3")
+Order <- c("Cor > 0.3", "Cor < 0.3")
+
+mg <- ggplot(BB, aes(x = Modules, y = Child, color=PathwayActivation, size = ModuleRatio)) + geom_point() + scale_size(range = c(3, 20), limits = c(0, 100)) +
+scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                      values = scales::rescale(x = c(0, 0.1, 1, 200), to = c(0,1), from = c(0, 200) ))
+mg <- mg  + facet_grid(Parent ~ factor(CorrelationToTraits, levels=Order), scales = "free", space = "free") +
+        guides(color = guide_legend(title = "-log2(p_adjust)"), size = guide_legend(title = "Ratio\n[%Genes per Level]"))+
+        xlab("\n\nAhead AADT") +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent') #transparent legend panel
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text.y.right = element_text(size=12, color = "black", face= "bold"), 
+        axis.text.y.left = element_text(size=12, face = "bold", color= OutlineColor), 
+        axis.text.x.bottom = element_text(size=10,face = "bold", angle = 45, hjust = 1, color= OutlineColor), 
+        legend.text=element_text(size=12), 
+        legend.title=element_text(size=12))
+  #,  legend.position="none")
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("red", "blue"), 0.4)
+        k <- 1
+        for (i in stripr) {
+        j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+        g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.01, 0.999)))
+      
+ggsave(AA, filename = paste(paste(Species, Year, Season, Analysis, "Slim_KEGGPathway", Tissue, sep="_"), ".png", sep=""), path = pathPlots, 
+               device='png', dpi=300, width = 13,height = 12)
+
+```
+
+###### 7.2.2.1 Specific Modules
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+######
+#Gill#
+######
+
+
+OxyModules <- c(
+2,
+4,
+7,
+10,
+11,
+21,
+25,
+28,
+34,
+38)
+OxyModules <- paste("RNA", OxyModules, sep="")
+
+
+
+mg <- ggplot(BB[BB$Modules %in% OxyModules,], aes(x = Modules, y = Child, color=PathwayActivation, size = PathwayActivation)) + geom_point() + scale_size(range = c(3, 15)) +
+#scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+#                        values = scales::rescale(x = c(0, 1, 5, 15), to = c(0,1), from = c(0, 15) ))
+scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                      values = scales::rescale(x = c(0, 0.1, 1, 200), to = c(0,1), from = c(0, 200) ))
+mg <- mg  + facet_grid(Parent ~ factor(CorrelationToTraits, levels=Order), scales = "free", space = "free") +
+        xlab("\n\nAhead AADT") +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent') #transparent legend panel
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text.y.right = element_text(size=12, color = "black", face= "bold"), 
+        axis.text.y.left = element_text(size=12, face = "bold", color= OutlineColor), 
+        axis.text.x.bottom = element_text(size=10,face = "bold", angle = 45, hjust = 1, color= OutlineColor), 
+        legend.position="none")
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("red", "blue"), 0.4)
+        k <- 1
+        for (i in stripr) {
+        j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+        g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.01, 0.999)))
+ggsave(AA, filename = paste(paste(Species, Year, Season, Analysis, "Slim_Tissues_KEGGPathway_Oxygen", sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,height = 9)
+```
+
+
+###### 7.2.2.2. Specific Child terms
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+######
+#Gill#
+######
+############################
+#For Subsets of SSU_Modules#
+############################
+#ModulesOfInterst <-c("SSU2","SSU3","SSU5","SSU6", "SSU9", "SSU10")
+#BB <- B[B$Modules %in% ModulesOfInterst,]
+#BB <- BB[c("Modules", "Description", "GeneRatio", "p.adjust", "Child", "Parent", "ModuleRatio")]
+
+BB <- B
+BB$Modules <- paste("RNA", sub("ME", "", BB$Modules), sep="")
+
+table(BB[BB$Parent == "Organismal Systems",]$Child)
+
+BBImmune <- BB[BB$Child %in% c(
+"Immune system"
+), ]
+
+mg <- ggplot(BBImmune, aes(x = Modules, y = Description, color=PathwayActivation , size = PathwayActivation )) + 
+        geom_point() + scale_size(range = c(3, 20)) + 
+        scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                        values = scales::rescale(x = c(0, 1, 5, 50), to = c(0,1), from = c(0, 50) ))
+mg <- mg + facet_grid(rows = vars(BBImmune$Child), , scales = "free", space = "free") +
+#mg <- mg  + facet_grid(Child ~ factor(CorrelationToTraits, levels=Order), scales = "free", space = "free") +
+  
+  guides(color = guide_legend(title = "-log2(p_adjust)"), size = guide_legend(title = "-log2(p_adjust)")) +
+        xlab("\n\nAhead AADT") +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("salmon", "darkred"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+        
+ggsave(AA, filename = paste(paste(Species, Year, Season, Analysis, "Slim_Tissues_KEGGPathway_ImmuneSystem", sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,height = 9)
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 7.2.3 GO Module Pathways
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+ModsOfInterst_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ModsOfInterst_list", Date, sep="_"), ".rds", sep=""))))
+
+
+####
+#GO#
+####
+
+ WGCNA_KEGG_SLIMS_GO <- list(
+      "Gill_Slim" =ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8$SLIMGO_mouse, 
+      "Liver_Slim" = ORA_list$Liver_RNA_WGCNA_MODULES_Corr_Filter_0.8$SLIMGO_mouse)
+
+#######################
+#Gill & Liver Combined#
+#######################
+Slims_GO <- list()
+for (i in names(WGCNA_KEGG_SLIMS_GO)[grepl("Gill|Liver", names(WGCNA_KEGG_SLIMS_GO))]) {
+  tryCatch({  
+  a           <- length(Slims_GO)
+  g           <- paste(i)
+  gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+
+  A <- WGCNA_KEGG_SLIMS_GO[[i]]
+  B <- do.call(rbind.data.frame, A)
+
+  
+  B$Modules <- gsub("\\..*","",rownames(B))
+  unique(B$Modules)
+  B$Modules <- gsub("slim_ego_","",B$Modules)
+  rownames(B) <- NULL
+  
+  B$Modules <- paste("RNA", sub("ME", "", B$Modules), sep="")
+  B$Tissue <- paste(gg)
+  B$ModulesTissue <- paste(gg, B$Modules, sep="_")
+    
+    
+   #Select only Enrichment that are correlated (0.3) to the abipotics and physiology and exclude module 0
+   InterestingComparison <- ModsOfInterst_list[[grep(paste(gg, "RNA", sep="_"), names(ModsOfInterst_list))]]
+   InterestingComparison <- lapply(InterestingComparison, rownames_to_column)
+   InterestingComparison <- do.call(rbind, lapply(names(InterestingComparison), function(name) {
+   data.frame(name, InterestingComparison[[name]], stringsAsFactors = FALSE)}))
+   names(InterestingComparison) <- c("variable", "module", "correlation", "p_value")
+   InterestingComparison$module <- paste(sub("ME","RNA", InterestingComparison$module))
+   InterestingComparison <- InterestingComparison[InterestingComparison$module != "RNA0", ]
+  
+   BB <- B
+   BB <- BB[BB$Modules %in% unique(InterestingComparison$module),]
+
+  
+    b <- length(Slims_GO)
+    Slims_GO[[b+1]] <- BB
+    names(Slims_GO)[[b+1]] <- gg  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})} 
+  
+Slim_GO <- do.call(rbind.data.frame, Slims_GO)
+rownames(Slim_GO) <- c()
+
+Order <- c("Gill", "Liver")
+mg <- ggplot(Slim_GO, aes(x = Modules, y = Term, color=Percent, size = Percent)) + geom_point() + scale_size(range = c(3, 20))
+
+#scale_color_manual(colours = c("blue",  "red")) 
+#scale_colour_manual(values=c("blue",  "red"))
+mg <- mg + facet_grid(Term ~ factor(Tissue, levels=Order), scales = "free", space = "free") + 
+  scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                        values = scales::rescale(x = c(0, 1, 5, 15), to = c(0,1), from = c(0, 15) )) +
+  
+  guides(color = guide_legend(title = "-log2(p_adjust)"), size = guide_legend(title = "-log2(p_adjust)")) +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("salmon", "darkred"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+      AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+        
+ggsave(AA, filename = paste(paste(Species, Year, Season, Analysis, "Slim_Tissues_GO_Pathway", sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12,height = 9)
+AA
+```
+
+#-
+
+# 8 Hubs
+
+https://www.biostars.org/p/294436/
+https://www.biostars.org/p/419867/
+
+https://support.bioconductor.org/p/95965/
+
+in WGCNA hub genes are selected either by calculating the intramodular connectivity from the adjacency (as opposed to TOM), or by ranking genes using their correlation with the module eigengene (kME). Either one should produce results similar to but likely somewhat different from ranking of connectivity calculated from TOM, possibly on a subset of genes.
+
+```{r,  message=FALSE,warning=FALSE}
+st_Gill_RNA  <- 6
+st_Liver_RNA <- 3
+st_Gill_SSU  <- 6
+
+
+WGCNA_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+
+degrees_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "degrees_list", Date, sep="_"), ".rds", sep=""))))
+
+#TPM Data
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+
+Hub_list <- list()
+TPM_value <- 1
+for (WGCNAset in names(WGCNA_list)[grepl("RNA|SSU", names(WGCNA_list))]) {
+  tryCatch({
+    require(tidyverse); require(WGCNA)
+  
+  print(WGCNAset)
+  Hub_list_length <- length(Hub_list)
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+  MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  TPM  <- tpms[[names(tpms)[grepl(Tissue, names(tpms))]]]
+  TPM <- TPM[names(TPM) %in% rownames(SAM)]
+
+  if (Type != "SSU") {
+  ANNO <- WGCNA_list[[WGCNAset]][grepl("GeneAnno", names(WGCNA_list[[WGCNAset]]))][[1]]
+  }
+  if (Tissue == "Liver" && Type == "RNA") {st <- st_Liver_RNA
+  } else if (Tissue == "Gill" && Type == "RNA") {st <- st_Gill_RNA
+  } else if (Tissue == "Gill" && Type == "SSU") {st <- st_Gill_SSU
+  } else {st <- NA }
+
+  print(st)
+  
+  moduleColors <- WGCNA_list[[WGCNAset]][grepl("moduleColors", names(WGCNA_list[[WGCNAset]]))][[1]]
+  moduleLabels <- WGCNA_list[[WGCNAset]][grepl("moduleLabels", names(WGCNA_list[[WGCNAset]]))][[1]]
+  
+  module_size<- as.data.frame(table(moduleLabels))
+  colnames(module_size) <- c("Module", "Size")
+  module_size %>% dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+  
+  degrees <- degrees_list[[paste("degrees", Tissue, Type, sep="_")]]
+  
+  #################
+  #GetHubsFunction#
+  #################
+  gethubs<- function(omics_data, colorh, omitColors = "grey", power = st, type = "signed") {
+    isIndex = FALSE
+    modules = names(table(colorh))
+    if (!(is.na(omitColors)[1])) 
+        modules = modules[!is.element(modules, omitColors)]
+    if (is.null(colnames(omics_data))) {
+        colnames(omics_data) = 1:dim(omics_data)[2]
+        isIndex = TRUE}
+    hubs = rep(NA, length(modules))
+    names(hubs) = modules
+    for (m in modules) {
+        adj = adjacency(omics_data[, colorh == m], power = power, 
+            type = type)
+        hubs[m] = list(as.data.frame(rowSums(adj)))}
+    return(hubs)}
+
+  ##################################################
+  #Get Hubs and join in Module and Gene information#
+  ##################################################
+  hubs <- gethubs(omics_data, moduleColors, omitColors = 0)
+  hubs <- lapply(hubs, function(x) rownames_to_column(x, var = "geneid"))
+  hubs <- lapply(hubs, setNames, c("Geneid", "adjSums"))
+  hubs <- lapply(hubs, function(df) {df[order(df$adjSums, decreasing=TRUE),]})
+  for (ModuleColor in names(hubs)) {
+        hubs[[ModuleColor]]<- dplyr::left_join(hubs[[ModuleColor]] %>%
+          mutate(Module_color = ModuleColor),  module_size |> mutate(MODULE = paste("ME", Module, sep="")))}
+  for (ModuleColor in names(hubs)) {
+  if (Type != "SSU") {
+    hubs[[ModuleColor]] <- dplyr::left_join(hubs[[ModuleColor]],
+                                            ANNO[[paste("GeneAnno_",  unique(hubs[[ModuleColor]]$MODULE), sep="")]])
+    }
+      if (Type == "SSU") {hubs[[ModuleColor]]<- hubs[[ModuleColor]]}
+    }
+  hubs_expr <- list()
+  for (ModuleColor in names(hubs)) {
+    hub_expr_length <- length(hubs_expr)
+    hubs_expr[[hub_expr_length+1]] <- dplyr::left_join(hubs[[ModuleColor]],
+                                  as.data.frame(t(omics_data[names(omics_data) %in%
+                              hubs[[ModuleColor]]$Geneid])) %>% mutate(Geneid = rownames(.)))
+  names(hubs_expr)[[hub_expr_length+1]] <- unique(hubs[[ModuleColor]]$MODULE) 
+  }
+
+  ##########################
+  #Filter HubsGenes for TPM#
+  ##########################
+  if (Type != "SSU") {
+    #print("tpm")
+    #print(dim(TPM))
+    rownames(TPM) <-gsub("[[:punct:]]+", ".", rownames(TPM)) #replace special characters in gene names by dot 
+    keep <- rowSums(TPM > TPM_value) >= 3
+    TPMFilter<- TPM[keep,]
+    print(dim(TPMFilter))
+
+    for (MODULE in names(hubs_expr)) {
+      #print(paste(MODULE, paste("Genes before TPM", TPM_value,  "> 3 Filter"), dim(hubs_expr[[MODULE]])[1]))
+        hubs_expr[[MODULE]] <- hubs_expr[[MODULE]][hubs_expr[[MODULE]]$Geneid %in% rownames(TPMFilter),]
+      #print(paste(MODULE, paste("Genes after TPM", TPM_value,  "> 3 Filter"), dim(hubs_expr[[MODULE]])[1]))
+    }
+    }
+      if (Type == "SSU") { hubs_expr[[MODULE]] <- hubs_expr[[MODULE]]
+    }
+
+  
+  Hub_list[[Hub_list_length+1]] <- hubs_expr
+  names(Hub_list)[[Hub_list_length+1]] <- paste("hubs_expr", Tissue, Type, sep="_")
+  
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+
+
+
+###########
+#Save Data#
+###########
+saveRDS(Hub_list, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "Hub_list", Date, sep="_"), ".rds", sep=""))))
+
+Hub_list  <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "Hub_list", Date, sep="_"), ".rds", sep=""))))
+```
+
+## 8.1 Visualize Hubs
+
+```{r,  message=FALSE,warning=FALSE}
+################
+#Visualize HUBS#
+################
+ 
+ModuleSelection <- c(1, 5, 6, 37)
+
+ModuleSelection <- paste(Type, ModuleSelection, sep="")
+
+hubs_decreasing <- lapply(Hub_list$hubs_expr_Gill_RNA, function(df) {df[order(df$adjSums, decreasing=TRUE),]})
+hubs_decreasing_head <- lapply(hubs_decreasing , function(x) head(x, 20))
+hubs_decreasing_head$ME1[c("GeneSymbolHS", "Geneid", "adjSums")]
+
+hubs_decreasing_head$ME5$GeneSymbolHS
+
+hubs_decreasing_head <- plyr::ldply (hubs_decreasing_head, data.frame)
+hubs_decreasing_head$Module <- paste(Type, hubs_decreasing_head$Module, sep="")
+
+hubs_decreasing_head_df<- hubs_decreasing_head %>% filter(.$Module %in% ModuleSelection)
+hubs_decreasing_head_df <- data.frame(hubs_decreasing_head_df %>% pivot_longer(-c(".id","Geneid","adjSums","Module_color","Module", "Size","MODULE","GeneSymbolHS", "ENTREZID")))
+hubs_decreasing_head_df$Sample_Order <- factor(hubs_decreasing_head_df$name, level=rownames(SAM))
+hubs_decreasing_head_df <- mutate(hubs_decreasing_head_df, Label = ifelse(name == "SLSU21MLEB6", GeneSymbolHS, NA))
+hubs_decreasing_head_df$ModuleSelection <- factor(hubs_decreasing_head_df$Module, level=ModuleSelection)
+                                           
+hubs_decreasing_head_df %>% 
+  ggplot(., aes(x=Sample_Order, y=value, group=GeneSymbolHS)) +
+  geom_line(aes(color = ModuleSelection),alpha = 0.5) +
+     #ggrepel::geom_text_repel(aes(label = Label),segment.color = 'transparent',
+     #                       direction = "y", size = 3,fontface = 'bold', box.padding = 2,force = .8) +
+   ggrepel::geom_text_repel(aes(label = Label), #segment.color = 'transparent',
+    nudge_x = .15,
+    box.padding = 0.5,
+    #size = 3, fontface = 'bold',
+    nudge_y = 1,
+    segment.curvature = -0.1,
+    segment.ncp = 3,
+    segment.angle = 20) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90))+
+  facet_grid (rows = vars(ModuleSelection)) +
+  labs(x = "Sample",y = "normalized expression") +
+  scale_colour_manual(values = levels(factor(hubs_decreasing_head_df$Module_color))) +
+  theme(
+  axis.title.x.bottom = element_text(size=10,face = "bold"),
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        #strip.text.y.right = element_text(angle = 0, size=rel(0.8)),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.x.bottom = element_text(face = "bold", angle = 45, hjust = 1),
+        axis.text.y.left = element_text(face = "bold"),
+        #axis.text.y.left = element_text(size=rel(1)),
+        legend.title = element_text( size = 8),
+        legend.text = element_text(size = 8),
+        #legend.key.size = unit(0.4, 'cm'),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9), panel.background = element_blank())
+
+```
+
+## 8.2 Hubs Heat Plot
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=8}
+
+SLUCGeneManual <- read.csv2(file.path(path_Input_RNA, "SLUCGene-Manual-17.06.2023.csv"))[-1]
+
+for (WGCNAset in names(ORA_list)) {
+
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub(paste0(".*", "(Corr_Filter....)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub("Corr_Filter_", "", Corr_Filter)
+    
+    
+    GeneAnno <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("GeneAnno",
+                  names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]]
+    
+    HUBS <- Hub_list[[paste("hubs_expr", Tissue, Type, sep="_")]]
+
+    WGCNAset_list <- ORA_list[[WGCNAset]]
+  
+    for (i in names(WGCNAset_list)[grepl("SLIMKEGG", names(WGCNAset_list))]) {
+      require(org.Hs.eg.db)
+      SLIMKEGG <-  WGCNAset_list[[i]]
+      
+      #Just to add in readbale geneSymbols for the EntrezID
+      for (ii in names(SLIMKEGG)) {
+        
+        MODULE <- sub("slim_kegg_", "", ii)
+        ANNO  <- GeneAnno[[which(sub("GeneAnno_", "", names(GeneAnno)) %in% MODULE)]]
+        HUB   <- HUBS[[which(names(HUBS) %in% MODULE)]]
+      
+        df_Keggs <- as.data.frame(SLIMKEGG[[ii]])
+        geneID_split <- str_split(df_Keggs$geneID, "/")
+        GeneSymbols <- character(length(geneID_split))
+        
+        all_genes <- unlist(geneID_split)
+        gene_counts <- table(all_genes)
+        gene_counts_df <- as.data.frame(gene_counts)
+        colnames(gene_counts_df) <- c("ENTREZID", "CountinPathways")
+        gene_counts_df <- gene_counts_df[order(-gene_counts_df$Count), ]
+        gene_counts_df <- left_join(gene_counts_df, bind_rows(GeneAnno))
+        gene_counts_df <- gene_counts_df[!duplicated(gene_counts_df$ENTREZID),]
+        gene_counts_df <- left_join(gene_counts_df, HUB)
+    
+      
+        head(df_Keggs[, -which(colnames(df_Keggs) %in% c("GeneID", "Symbol"))])
+ 
+        A <- gene_counts_df[c("ENTREZID","Geneid", "GeneSymbolHS",  "adjSums")]
+        
+        B <- df_Keggs[c("Description", "geneID", "category", "subcategory")]
+        colnames(B) <- c("Description", "ENTREZID", "category", "subcategory")
+        
+        
+        B_long <- B %>%
+          separate_rows(ENTREZID, sep = "/")
+
+        C <- merge(A, B_long)
+        C <- C[C$category != "Human Diseases",]
+        CC <- C %>%
+          dplyr::arrange(desc(adjSums)) %>%  # Order by adjSums in descending order
+          dplyr::distinct(GeneSymbolHS, .keep_all = TRUE) %>%  # Keep distinct GeneID values
+          dplyr::slice(1:50)    
+        CCC <- C[C$GeneSymbolHS %in% CC$GeneSymbolHS,]
+        CCC$GeneCombo <- paste(CCC$GeneSymbolHS, CCC$Geneid, sep="-")
+        CCC <- CCC %>% arrange(desc(adjSums))
+        
+    
+        # write.csv2(CCC, file = paste0(file.path(path_Output_WGCNA, 
+        #         paste(paste("Hubs", Analysis, Tissue, Type, i, "Corr_filter", Corr_Filter,  ii, sep="_"), 
+        #               "csv", sep="."))))
+        
+        
+        HUB_C  <- merge(HUB, C, all=T) 
+        HUB_CC <- HUB_C %>%
+          dplyr::arrange(desc(adjSums)) %>%  # Order by adjSums in descending order
+          dplyr::distinct(GeneSymbolHS, .keep_all = TRUE) %>%  # Keep distinct GeneID values
+          dplyr::slice(1:100)
+        
+        HUB_CCC <- HUB_C[HUB_C$GeneSymbolHS %in% HUB_CC$GeneSymbolHS,]
+        
+        HUB_CCC$GeneCombo <- paste(HUB_CCC$GeneSymbolHS, HUB_CCC$Geneid, sep="-")
+        HUB_CCC_C <- HUB_CCC %>% relocate(GeneCombo, Description)
+        
+        HUB_CCC_C <- merge(HUB_CCC_C, SLUCGeneManual[c("rowname", "GENENAME")] %>% mutate(Geneid = rowname))
+        
+        HUB_CCC_C <- HUB_CCC_C %>%
+          dplyr::arrange(desc(adjSums))
+        
+        
+        # write.csv2(HUB_CCC_C, file = paste0(file.path(path_Output_WGCNA, 
+        #         paste(paste(Species, Year, Season, Tissue, Type, Analysis, "Corr_filter", Corr_Filter, "Hubgene_Order", sub("ME", "RNA", ii), sep="_"), ".csv", sep=""))))
+        
+        
+        HubHeatPlot <- CCC %>% ggplot(., aes(x=GeneCombo, y=Description, fill=adjSums)) +
+        geom_tile() + scale_fill_gradient2(name = "Connectivity", low = "#327eba",
+                                    mid = "white", high = "#e06663") +
+        theme(axis.text.x=element_text(angle = 60, hjust = 1)) +
+        atheme + 
+        theme(
+          panel.background = element_rect(fill='transparent'), #transparent panel bg
+          plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+          panel.grid.major = element_line(colour = "grey40"), 
+          panel.grid.minor = element_line(colour = "grey40") 
+          ) +
+        theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+          ggtitle(paste(Tissue, sub("ME", "RNA", MODULE)))
+        
+       ##################
+       #Plot a selection#
+       ##################
+        if (Type == "RNA" & Tissue == "Gill" & MODULE %in% c("ME2", "ME7", "ME11")) {
+          plot(HubHeatPlot)
+        } else if (Tissue == "Liver" & MODULE %in% c("ME1", "ME3")) {
+          plot(HubHeatPlot)
+        } else if (Type == "SSU" & MODULE %in% c("ME1", "ME2", "ME3")) {
+          plot(HubHeatPlot)
+        } else {
+        # print("Plots are saved to the pathPlots")
+        }
+        
+    ggsave(HubHeatPlot, filename = paste(paste(Species, Year, Season, Tissue, Type, Analysis, "HubHeatPlot", ii, sep="_"), ".png", sep=""), path = pathPlots ,
+           device='png', dpi=300, width = 12,height = 8)
+      }
+    }
+}
+```
+
+## 8.3 Gene significance for Hubs
+
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-9-559
+
+Category 3: Functions for module and gene selection
+Finding biologically or clinically significant modules and genes is a major goal of many co-expression analyses. The definition of biological or clinical significance depends on the research question under consideration. Abstractly speaking, we define a gene significance measure as a function GS that assigns a non-negative number to each gene; the higher GS i the more biologically significant is gene i. In functional enrichment analysis, a gene significance measure could indicate pathway membership. In gene knock-out experiments, gene significance could indicate knock-out essentiality. A microarray sample trait T can be used to define a trait-based gene significance measure as the absolute correlation between the trait and the expression profiles, Equation 2. A measure of module significance can be defined as average gene significance across the module genes (Figure 3A). When dealing with a sample trait T, a measure of statistical significance between the module eigengene E and the trait T can be defined, for example, using correlation (Equation 2) or a p-value (Equation 3) obtained from a univariate regression model between E and T. Modules with high trait significance may represent pathways associated with the sample trait. Genes with high module membership in modules related to traits (Figure 3B) are natural candidates for further validation [10, 14, 15, 18].
+
+## 8.4 Dataframe GS Hubs
+
+```{r,  message=FALSE,warning=FALSE}
+Corr_Filter <- 0.8
+ORA_list <- list()
+ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8 <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Gill", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+ORA_list$Liver_RNA_WGCNA_MODULES_Corr_Filter_0.8 <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ORA_list_Liver", Corr_Filter, Date, sep="_"), ".rds", sep=""))))
+
+WGCNA_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+
+SLUCGeneManual <- read.csv2(file.path(path_Input_RNA, "SLUCGene-Manual-17.06.2023.csv"))[-1]
+
+scatter_list <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "scatter_list", Date, sep="_"), ".rds", sep=""))))
+
+#TPM Data
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+TPM_value <- 1
+
+
+Hub_list  <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "Hub_list", Date, sep="_"), ".rds", sep=""))))
+
+
+ModsOfInterst_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ModsOfInterst_list", Date, sep="_"), ".rds", sep=""))))
+
+
+HUB_GS_List <- list()
+for (WGCNAset in names(ORA_list)) {
+
+    HUB_GS_List_length <- length(HUB_GS_List)
+    
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub(paste0(".*", "(Corr_Filter....)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub("Corr_Filter_", "", Corr_Filter)
+    
+    GeneAnno <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("GeneAnno",
+                  names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]]
+    
+    Scatter <- scatter_list[[paste("Scatter",  Type, Tissue, sep="_")]]
+    
+    HUBS <- Hub_list[[paste("hubs_expr", Tissue, Type, sep="_")]]
+
+    WGCNA_Ora_list <- ORA_list[[WGCNAset]]
+    WGCNAset_list <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]
+    
+    ModsOfInterst <- ModsOfInterst_list[[paste("ModsOfInterest", Tissue, Type, sep="_")]]
+    
+    omics_data <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("omics_data",names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    MEs  <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("MEs", names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    SAM  <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("datTraits", names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    Samples <- rownames(SAM)
+    TPM  <- tpms[[names(tpms)[grepl(Tissue, names(tpms))]]]
+    TPM <- TPM[names(TPM) %in% rownames(SAM)]
+
+    WGCNAset_list  <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]
+    
+    WGCNA_Ora_list <- ORA_list[[WGCNAset]]
+    SLIMKEGG       <-  WGCNA_Ora_list$SLIMKEGG
+  
+    #There is the Pathway "Efferocytosis" enriched in Gill-RNA33 but the pathway lacks propper
+    #description in the Slims, so we delete it
+    filter_rows <- function(df) {
+    df[!df$Description %in% "Efferocytosis", ]}
+    SLIMKEGG <- lapply(SLIMKEGG, filter_rows)
+    not_empty <- function(df) {
+    nrow(df) > 0 && ncol(df) > 0}
+    SLIMKEGG <- Filter(not_empty, SLIMKEGG)
+
+    not_in <- function(x, y) { return(!(x %in% y))}
+    
+    HUB_GS_MEs_List <- list()
+    
+    for (MODULE in names(HUBS)) {
+      print(MODULE)
+      if (MODULE %in% names(HUBS)[names(HUBS) %in% sub("slim_kegg_", "", names(SLIMKEGG))]) {
+        require(org.Hs.eg.db)
+        
+        HUB_GS_MEs_List_length <- length( HUB_GS_MEs_List)
+        
+        ANNO  <- GeneAnno[[which(sub("GeneAnno_", "", names(GeneAnno)) %in% MODULE)]]
+        HUB   <- HUBS[[which(names(HUBS) %in% MODULE)]][1:8]
+    
+        df_Keggs <- as.data.frame(SLIMKEGG[[paste("slim_kegg_", MODULE, sep="")]])
+        df_Keggs <- df_Keggs[df_Keggs$category != "Human Diseases", ]
+        geneID_split <- str_split(df_Keggs$geneID, "/")
+        GeneSymbols <- character(length(geneID_split))
+        all_genes <- unlist(geneID_split)
+        gene_counts <- table(all_genes)
+        gene_counts_df <- as.data.frame(gene_counts)
+        colnames(gene_counts_df) <- c("ENTREZID", "CountinPathways")
+        gene_counts_df <- gene_counts_df[order(-gene_counts_df$Count), ]
+        gene_counts_df <- left_join(gene_counts_df, bind_rows(GeneAnno))
+        gene_counts_df <- gene_counts_df[!duplicated(gene_counts_df$ENTREZID),]
+        gene_counts_df <- left_join(gene_counts_df, HUB)
+    
+        head(df_Keggs[, -which(colnames(df_Keggs) %in% c("GeneID", "Symbol"))])
+
+        A <- gene_counts_df[c("ENTREZID","Geneid", "GeneSymbolHS",  "adjSums")]
+        B <- df_Keggs[c("Description", "p.adjust", "geneID", "category", "subcategory")]
+        colnames(B) <- c("Description", "p.adjust", "ENTREZID", "category", "subcategory")
+        B_long <- B %>%
+        separate_rows(ENTREZID, sep = "/")
+        C <- merge(A, B_long)
+        C <- C[C$category != "Human Diseases",]
+        C_combined <- C %>%
+          dplyr::group_by(Geneid) %>%
+          dplyr::summarize(Description = paste(Description, collapse = "/"), 
+                           p.adjust = paste(p.adjust, collapse = "/"), 
+                           category = paste(category, collapse = "/"),
+                           subcategory = paste(subcategory, collapse = "/"))
+        C_combined <- left_join(A, C_combined)
+        HUB_C  <- merge(HUB, C_combined, all=T) 
+        C_combined[!C_combined$Geneid %in% HUB$Geneid,] 
+        #These are genes where no adjSums was calcualted if not present in all Samples
+        
+        
+        
+        HUB_C$GeneCombo <- paste(HUB_C$GeneSymbolHS, HUB_C$Geneid, sep="-")
+        HUB_C <- HUB_C %>% relocate(GeneCombo, Description)
+
+        HUB_C_ANNO <- left_join(HUB_C, SLUCGeneManual[c("rowname", "GENENAME")] %>% mutate(Geneid = rowname))
+        
+        
+        Scatter_AllTraits <- do.call(rbind.data.frame, Scatter)
+        rownames(Scatter_AllTraits) <- NULL
+        Scatter_AllTraits_ME <- Scatter_AllTraits[Scatter_AllTraits$Modules %in% 
+                                                  paste("RNA", sub("ME", "", MODULE), sep=""),]
+        Scatter_AllTraits_ME <- Scatter_AllTraits_ME[-which( grepl("MMME", names(Scatter_AllTraits_ME)))]
+        Scatter_AllTraits_ME_split <- split(Scatter_AllTraits_ME, Scatter_AllTraits_ME$TraitOfInterest)
+
+        Scatter_AllTraits_ME2 <- Scatter_AllTraits_ME[c("Geneid", "TraitOfInterest", "GS.", "p.GS.")]
+        Scatter_AllTraits_ME2<-Scatter_AllTraits_ME2 %>%
+          group_by(TraitOfInterest) %>% 
+          filter(!duplicated(Geneid))
+        Scatter_AllTraits_ME_wide <- Scatter_AllTraits_ME2  %>%
+          pivot_wider(
+          id_cols = Geneid,
+          names_from = TraitOfInterest,
+          values_from = c(GS., p.GS.)) %>% as.data.frame()
+        Scatter_AllTraits_ME_wide<- left_join(Scatter_AllTraits_ME_wide, Scatter_AllTraits_ME[
+          c("Geneid", "ModuleMembership", "Module_color", "Modules")] %>% 
+          filter(!duplicated(Geneid)))
+        
+        HUB_C_ANNO_Scatter <- merge(HUB_C_ANNO, Scatter_AllTraits_ME_wide, all=T)
+
+          ##########################
+          #Filter HubsGenes for TPM#
+          ##########################
+          if (Type != "SSU") {
+            #print("tpm")
+            #print(dim(TPM))
+            rownames(TPM) <-gsub("[[:punct:]]+", ".", rownames(TPM)) 
+            #replace special characters in gene names by dot 
+            keep <- rowSums(TPM > TPM_value) >= 3
+            TPMFilter<- TPM[keep,]
+            #print(dim(TPMFilter))
+          
+            #print(paste(MODULE, paste("Genes before TPM", TPM_value,  "> 3 Filter"), dim(HUB_C_ANNO_Scatter)[1]))
+            HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter[HUB_C_ANNO_Scatter$Geneid %in% rownames(TPMFilter),]
+            #print(paste(MODULE, paste("Genes after TPM", TPM_value,  "> 3 Filter"), dim(HUB_C_ANNO_Scatter)[1]))
+            }
+            if (Type == "SSU") { HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter
+            }
+          HUB_C_ANNO_Scatter_omics <- 
+            left_join(HUB_C_ANNO_Scatter, 
+            as.data.frame(t(omics_data[names(omics_data) %in% HUB_C_ANNO_Scatter$Geneid])) %>% 
+            mutate(Geneid = rownames(.)))
+        
+          #########################
+          #Add in Ordered TPM data#
+          #names(TPMFilter)
+          TPMFilter <- TPMFilter %>% 
+            dplyr::select(all_of(Samples))
+           TPMFilter2 <- TPMFilter
+            names(TPMFilter2) <- paste(names(TPMFilter2), "tpm", sep="")
+        
+          HUB_C_ANNO_Scatter_omics <- 
+            dplyr::left_join(HUB_C_ANNO_Scatter, 
+            TPMFilter2[rownames(TPMFilter2) %in% HUB_C_ANNO_Scatter$Geneid,] %>% mutate(Geneid = rownames(.)))
+          
+          HUB_C_ANNO_Scatter_omics <- HUB_C_ANNO_Scatter_omics %>%
+            dplyr::arrange(desc(adjSums))
+        
+          #################################
+          #Filter for ModuleMembership 0.8#
+           HUB_C_ANNO_Scatter_omics_Filtered <- HUB_C_ANNO_Scatter_omics %>%
+            dplyr::filter(ModuleMembership > 0.8)
+
+          HUB_C_ANNO_Scatter_omics_Filtered <- HUB_C_ANNO_Scatter_omics_Filtered %>%
+            arrange(desc(adjSums))
+        
+          write.csv2(HUB_C_ANNO_Scatter_omics_Filtered, file = paste0(file.path(path_Output_WGCNA, 
+                paste(paste(Species, Year, Season, Tissue, Type, Analysis, "Hubs_GS_TPMfilter", "slimKeggs", "Corr_filter", Corr_Filter,  sub("ME", "RNA", MODULE), sep="_"), "csv", sep="."))))
+          #print(paste("Wrote csv for", Type, Tissue, MODULE ))
+          
+          HUB_GS_MEs_List[[HUB_GS_MEs_List_length+1]] <- HUB_C_ANNO_Scatter_omics
+          names(HUB_GS_MEs_List)[[HUB_GS_MEs_List_length+1]] <- MODULE
+          
+          } else if (MODULE %in% names(HUBS)[not_in(names(HUBS), sub("slim_kegg_", "", names(SLIMKEGG)))]) {
+        
+      ###################################################################
+      #For Modules where ORA on KEGG did not lead to a pathway detectiom#
+      ###################################################################
+        #print(paste(Tissue, Type, MODULE, "Did not have Pathway results"))
+        HUB_GS_MEs_List_length <- length(HUB_GS_MEs_List)
+
+        ANNO  <- GeneAnno[[which(sub("GeneAnno_", "", names(GeneAnno)) %in% MODULE)]]
+        HUB   <- HUBS[[which(names(HUBS) %in% MODULE)]][1:8]
+        HUB$GeneCombo <- paste(HUB$GeneSymbolHS, HUB$Geneid, sep="-")
+        HUB_ANNO <- left_join(HUB, SLUCGeneManual[c("rowname", "GENENAME")] %>% mutate(Geneid = rowname))
+      
+        Scatter_AllTraits <- do.call(rbind.data.frame, Scatter)
+        rownames(Scatter_AllTraits) <- NULL
+        Scatter_AllTraits_ME <- Scatter_AllTraits[Scatter_AllTraits$Modules %in% 
+                                                  paste("RNA", sub("ME", "", MODULE), sep=""),]
+        Scatter_AllTraits_ME <- Scatter_AllTraits_ME[-which( grepl("MMME", names(Scatter_AllTraits_ME)))]
+        Scatter_AllTraits_ME_split <- split(Scatter_AllTraits_ME, Scatter_AllTraits_ME$TraitOfInterest)
+
+        Scatter_AllTraits_ME2 <- Scatter_AllTraits_ME[c("Geneid", "TraitOfInterest", "GS.", "p.GS.")]
+        Scatter_AllTraits_ME2<-Scatter_AllTraits_ME2 %>%
+          group_by(TraitOfInterest) %>% 
+          filter(!duplicated(Geneid))
+        Scatter_AllTraits_ME_wide <- Scatter_AllTraits_ME2  %>%
+          pivot_wider(
+          id_cols = Geneid,
+          names_from = TraitOfInterest,
+          values_from = c(GS., p.GS.)) %>% as.data.frame()
+        Scatter_AllTraits_ME_wide<- left_join(Scatter_AllTraits_ME_wide, Scatter_AllTraits_ME[
+          c("Geneid", "ModuleMembership", "Module_color", "Modules")] %>% 
+          filter(!duplicated(Geneid)))
+        HUB_ANNO_Scatter <- merge(HUB_ANNO, Scatter_AllTraits_ME_wide, all=T)
+        
+        ##########################
+        #Filter HubsGenes for TPM#
+        ##########################
+        if (Type != "SSU") {
+          #print("tpm")
+          #print(dim(TPM))
+          rownames(TPM) <-gsub("[[:punct:]]+", ".", rownames(TPM)) #replace special characters in gene names by dot 
+          keep <- rowSums(TPM > TPM_value) >= 3
+          TPMFilter<- TPM[keep,]
+          #print(dim(TPMFilter))
+          
+          #print(paste(MODULE, paste("Genes before TPM", TPM_value,  "> 3 Filter"), dim(HUB_ANNO_Scatter)[1]))
+          HUB_ANNO_Scatter <- HUB_ANNO_Scatter[HUB_ANNO_Scatter$Geneid %in% rownames(TPMFilter),]
+          #print(paste(MODULE, paste("Genes after TPM", TPM_value,  "> 3 Filter"), dim(HUB_ANNO_Scatter)[1]))
+            }
+          if (Type == "SSU") { HUB_ANNO_Scatter <- HUB_ANNO_Scatter
+          }
+        
+         HUB_ANNO_Scatter_omics <- 
+          dplyr::left_join(HUB_ANNO_Scatter, 
+          as.data.frame(t(omics_data[names(omics_data) %in% HUB_ANNO_Scatter$Geneid])) %>% 
+          dplyr::mutate(Geneid = rownames(.)))
+  
+          #########################
+          #Add in Ordered TPM data#
+          names(TPMFilter)
+          TPMFilter <- TPMFilter %>% 
+            dplyr::select(all_of(Samples))
+           TPMFilter2 <- TPMFilter
+            names(TPMFilter2) <- paste(names(TPMFilter2), "tpm", sep="")
+        
+          HUB_ANNO_Scatter_omics <- 
+            dplyr::left_join(HUB_ANNO_Scatter, 
+            TPMFilter2[rownames(TPMFilter2) %in% HUB_ANNO_Scatter$Geneid,] %>% mutate(Geneid = rownames(.)))
+
+          HUB_ANNO_Scatter_omics <- HUB_ANNO_Scatter_omics %>%
+            dplyr::arrange(desc(adjSums))
+        
+          #################################
+          #Filter for ModuleMembership 0.8#
+           HUB_ANNO_Scatter_omics_Filtered <- HUB_ANNO_Scatter_omics %>%
+            dplyr::filter(ModuleMembership > 0.8)
+
+          HUB_ANNO_Scatter_omics_Filtered <- HUB_ANNO_Scatter_omics_Filtered %>%
+            arrange(desc(adjSums))
+          
+          ###########
+          #Write CSV#
+          write.csv2(HUB_ANNO_Scatter_omics_Filtered , file = paste0(file.path(path_Output_WGCNA, 
+                paste(paste(Species, Year, Season, Tissue, Type, Analysis, "Hubs_GS_TPMfilter", "NoEnrich","Corr_filter", Corr_Filter,  sub("ME", "RNA", MODULE), sep="_"), "csv", sep="."))))
+          #print(paste("Wrote csv for", Type, Tissue, MODULE, "No Enrichment"))
+          
+          HUB_GS_MEs_List[[HUB_GS_MEs_List_length+1]] <- HUB_ANNO_Scatter_omics
+          names(HUB_GS_MEs_List)[[HUB_GS_MEs_List_length+1]] <- MODULE
+        }
+        HUB_GS_List[[HUB_GS_List_length+1]] <- HUB_GS_MEs_List
+        names(HUB_GS_List)[[HUB_GS_List_length+1]] <- paste("HUB_GS", Tissue, Type, Analysis, sep="_")
+    }
+    
+  }
+
+###########
+#Save Data#
+###########
+saveRDS(HUB_GS_List, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "HUB_GeneSig", Date, sep="_"), ".rds", sep=""))))
+
+HUB_GS_List <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "HUB_GeneSig", Date, sep="_"), ".rds", sep=""))))
+
+
+##############
+#Module stats#
+##############
+# result_df<- data.frame(GenesPerModule = unlist(lapply(HUB_GS_List$HUB_GS_Gill_RNA_WGCNA, function(x) dim(x)[1])))
+# result_df[order(result_df$GenesPerModule, decreasing = TRUE), , drop=FALSE]
+# 
+# for (ME in names(HUB_GS_List$HUB_GS_Gill_RNA_WGCNA)) {
+#   MEset <- HUB_GS_List$HUB_GS_Gill_RNA_WGCNA[[ME]]
+#   MEset <- MEset %>%
+#             dplyr::filter(ModuleMembership > 0.8)
+#   print(paste(ME, dim(MEset)[1]))}
+# 
+# ModsOfInterst_list$ModsOfInterest_Gill_RNA$O2
+ 
+ 
+##########
+#Filtered#
+##########
+#Filtered for significant correlation to one of the physiological/abiotic traits
+HUB_GS_List_Filtered <- list()
+for (WGCNAset in names(ORA_list)) {
+
+    HUB_GS_List_Filtered_length <- length(HUB_GS_List_Filtered)
+    
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub(paste0(".*", "(Corr_Filter....)", ".*"), "\\1", WGCNAset)
+    Corr_Filter <-  sub("Corr_Filter_", "", Corr_Filter)
+    
+    GeneAnno <- WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("GeneAnno",
+                  names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]]
+    
+    Scatter <- scatter_list[[paste("Scatter",  Type, Tissue, sep="_")]]
+    
+    HUBS <- Hub_list[[paste("hubs_expr", Tissue, Type, sep="_")]]
+
+    WGCNAset_list <- ORA_list[[WGCNAset]]
+    
+    ModsOfInterst <- ModsOfInterst_list[[paste("ModsOfInterest", Tissue, Type, sep="_")]]
+     
+    omics_data <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("omics_data", names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    MEs  <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("MEs", names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    SAM  <- as.data.frame(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]][grepl("datTraits", names(WGCNA_list[[paste(Type, Tissue, Analysis, sep="_")]]))][[1]])
+    TPM  <- tpms[[names(tpms)[grepl(Tissue, names(tpms))]]]
+    TPM <- TPM[names(TPM) %in% rownames(SAM)]
+
+    for (slimKeggs in names(WGCNAset_list)[grepl("SLIMKEGG", names(WGCNAset_list))]) {
+      require(org.Hs.eg.db)
+      SLIMKEGG <-  WGCNAset_list[[slimKeggs]]
+      
+      #Just to add in readbale geneSymbols for the EntrezID
+      HUB_GS_MEs_Filtered_List <- list()
+      for (slimKegg in names(SLIMKEGG)) {
+        
+        HUB_GS_MEs_Filtered_List_length <- length(HUB_GS_MEs_Filtered_List)
+        
+        MODULE <- sub("slim_kegg_", "", slimKegg)
+        ANNO  <- GeneAnno[[which(sub("GeneAnno_", "", names(GeneAnno)) %in% MODULE)]]
+        HUB   <- HUBS[[which(names(HUBS) %in% MODULE)]][1:8]
+      
+        df_Keggs <- as.data.frame(SLIMKEGG[[slimKegg]])
+        geneID_split <- str_split(df_Keggs$geneID, "/")
+        GeneSymbols <- character(length(geneID_split))
+        
+        all_genes <- unlist(geneID_split)
+        gene_counts <- table(all_genes)
+        gene_counts_df <- as.data.frame(gene_counts)
+        colnames(gene_counts_df) <- c("ENTREZID", "CountinPathways")
+        gene_counts_df <- gene_counts_df[order(-gene_counts_df$Count), ]
+        gene_counts_df <- left_join(gene_counts_df, bind_rows(GeneAnno))
+        gene_counts_df <- gene_counts_df[!duplicated(gene_counts_df$ENTREZID),]
+        gene_counts_df <- left_join(gene_counts_df, HUB)
+    
+        head(df_Keggs[, -which(colnames(df_Keggs) %in% c("GeneID", "Symbol"))])
+        
+        A <- gene_counts_df[c("ENTREZID","Geneid", "GeneSymbolHS",  "adjSums")]
+        
+        B <- df_Keggs[c("Description", "p.adjust", "geneID", "category", "subcategory")]
+        colnames(B) <- c("Description", "p.adjust", "ENTREZID", "category", "subcategory")
+        B_long <- B %>%
+        separate_rows(ENTREZID, sep = "/")
+
+        C <- merge(A, B_long)
+        C <- C[C$category != "Human Diseases",]
+        
+        C_combined <- C %>%
+          dplyr::group_by(Geneid) %>%
+          dplyr::summarize(Description = paste(Description, collapse = "/"), 
+                           p.adjust = paste(p.adjust, collapse = "/"), 
+                           category = paste(category, collapse = "/"),
+                           subcategory = paste(subcategory, collapse = "/")
+                           )
+          C_combined <- left_join(A, C_combined)
+        
+        HUB_C  <- merge(HUB, C_combined, all=T) 
+        C_combined[!C_combined$Geneid %in% HUB$Geneid,] 
+        #These are genes where no adjSums was calcualted if not present in all Samples
+        
+        HUB_C$GeneCombo <- paste(HUB_C$GeneSymbolHS, HUB_C$Geneid, sep="-")
+        HUB_C <- HUB_C %>% relocate(GeneCombo, Description)
+
+        HUB_C_ANNO <- left_join(HUB_C, SLUCGeneManual[c("rowname", "GENENAME")] %>% mutate(Geneid = rowname))
+        
+        
+        Scatter_AllTraits <- do.call(rbind.data.frame, Scatter)
+        rownames(Scatter_AllTraits) <- NULL
+        Scatter_AllTraits_ME <- Scatter_AllTraits[Scatter_AllTraits$Modules %in% 
+                                                  paste("RNA", sub("ME", "", MODULE), sep=""),]
+        Scatter_AllTraits_ME <- Scatter_AllTraits_ME[-which( grepl("MMME", names(Scatter_AllTraits_ME)))]
+        Scatter_AllTraits_ME_split <- split(Scatter_AllTraits_ME, Scatter_AllTraits_ME$TraitOfInterest)
+
+        Scatter_AllTraits_ME2 <- Scatter_AllTraits_ME[c("Geneid", "TraitOfInterest", "GS.", "p.GS.")]
+        Scatter_AllTraits_ME2<-Scatter_AllTraits_ME2 %>%
+          group_by(TraitOfInterest) %>% 
+          filter(!duplicated(Geneid))
+        Scatter_AllTraits_ME_wide <- Scatter_AllTraits_ME2  %>%
+          pivot_wider(
+          id_cols = Geneid,
+          names_from = TraitOfInterest,
+          values_from = c(GS., p.GS.)) %>% as.data.frame()
+        Scatter_AllTraits_ME_wide<- left_join(Scatter_AllTraits_ME_wide, Scatter_AllTraits_ME[
+          c("Geneid", "ModuleMembership", "Module_color", "Modules")] %>% 
+          filter(!duplicated(Geneid)))
+        
+        HUB_C_ANNO_Scatter <- merge(HUB_C_ANNO, Scatter_AllTraits_ME_wide, all=T)
+        HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter %>%
+          arrange(desc(adjSums))
+
+        ##########################
+        #Filter HubsGenes for TPM#
+        ##########################
+        if (Type != "SSU") {
+          #print("tpm")
+          #print(dim(TPM))
+          rownames(TPM) <-gsub("[[:punct:]]+", ".", rownames(TPM)) #replace special characters in gene names by dot 
+          keep <- rowSums(TPM > TPM_value) >= 3
+          TPMFilter <- TPM[keep,]
+          print(dim(TPMFilter))
+          
+          #print(paste(MODULE, paste("Genes before TPM", TPM_value,  "> 3 Filter"), dim(HUB_C_ANNO_Scatter)[1]))
+          HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter[HUB_C_ANNO_Scatter$Geneid %in% rownames(TPMFilter),]
+          #print(paste(MODULE, paste("Genes after TPM", TPM_value,  "> 3 Filter"), dim(HUB_C_ANNO_Scatter)[1]))
+            }
+          if (Type == "SSU") { HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter
+            }
+        
+        HUB_C_ANNO_Scatter <- HUB_C_ANNO_Scatter %>%
+          arrange(desc(adjSums))
+        
+        HUB_C_ANNO_Scatter_omics <- 
+          left_join(HUB_C_ANNO_Scatter, 
+          as.data.frame(t(omics_data[names(omics_data) %in% HUB_C_ANNO_Scatter$Geneid])) %>% 
+            mutate(Geneid = rownames(.)))
+        
+        names(TPMFilter)
+        TPMFilter2 <- TPMFilter
+        names(TPMFilter2) <- paste(names(TPMFilter2), "tpm", sep="")
+        
+        HUB_C_ANNO_Scatter_omics <- 
+          left_join(HUB_C_ANNO_Scatter, 
+          TPMFilter2[rownames(TPMFilter2) %in% HUB_C_ANNO_Scatter$Geneid,] %>% mutate(Geneid = rownames(.)))
+        
+        #########################################
+        #Filter for MM > 0.8 and TraitCorr > 0.3#
+        #########################################
+    
+        GS_Geneid  <- list()
+    for (GS in names(HUB_C_ANNO_Scatter_omics)[grepl("GS.", names(HUB_C_ANNO_Scatter_omics))][names(HUB_C_ANNO_Scatter_omics)[grepl("GS.", names(HUB_C_ANNO_Scatter_omics))] !=
+        names(HUB_C_ANNO_Scatter_omics)[grepl("p.GS.", names(HUB_C_ANNO_Scatter_omics))]]) {
+      GS_Geneid_length <- length(GS_Geneid)
+      GS_Geneid[[GS_Geneid_length+1]] <- na.omit(HUB_C_ANNO_Scatter_omics[abs(HUB_C_ANNO_Scatter_omics[[GS]]) > 0.3, ]$Geneid)
+      names(GS_Geneid)[[GS_Geneid_length+1]] <- GS
+    }
+        
+        GS_Geneid_rbind<- unique(unlist(GS_Geneid))
+    
+     HUB_C_ANNO_Scatter_omics_Filtered <- HUB_C_ANNO_Scatter_omics %>%
+        dplyr::filter(ModuleMembership > 0.8, Geneid %in% GS_Geneid_rbind)
+    
+     HUB_C_ANNO_Scatter_omics_Filtered <- HUB_C_ANNO_Scatter_omics_Filtered %>%
+          arrange(desc(adjSums))
+     
+        #write.csv2(HUB_C_ANNO_Scatter_omics_Filtered, file = paste0(file.path(path_Output_WGCNA, 
+        #        paste(paste("Hubs_GS_Filtered", Analysis, Tissue, Type, slimKeggs, "Corr_filter", Corr_Filter, 
+        #                    MODULE, sep="_"), "csv", sep="."))))
+        
+        
+    #     HUB_C_ANNO_Scatter_omics_Filtered_long <- as.data.frame(HUB_C_ANNO_Scatter_omics_Filtered %>%
+    #       separate_rows(Description, p.adjust, category, subcategory, sep = "/"))
+    #     
+    #     Description_10 <- as.data.frame(HUB_C_ANNO_Scatter_omics_Filtered_long %>%
+    #       distinct(Description, .keep_all = TRUE) %>% 
+    #       arrange(as.numeric(p.adjust)) %>% 
+    #       slice(1:10))$Description
+    # 
+    #     HUB_C_ANNO_Scatter_omics_Filtered_long <- 
+    #       HUB_C_ANNO_Scatter_omics_Filtered_long[HUB_C_ANNO_Scatter_omics_Filtered_long$Description %in%
+    #                                                c(Description_10, NA), ]
+    #     
+    #     HUB_C_ANNO_Scatter_omics_Filtered_long <-     
+    #       HUB_C_ANNO_Scatter_omics_Filtered_long[!is.na(HUB_C_ANNO_Scatter_omics_Filtered_long$Description),]
+    #     
+    #     
+    #     
+    #     
+    #     HubHeatPlot <- HUB_C_ANNO_Scatter_omics_Filtered_long %>% ggplot(., aes(x=GeneCombo, y=Description,
+    #                                                                             fill=GS._O2)) +
+    #     geom_tile() + scale_fill_gradient2(name = "Connectivity", low = "#327eba",
+    #                                 mid = "white", high = "#e06663") +
+    #     theme(axis.text.x=element_text(angle = 60, hjust = 1)) +
+    # 
+    #     #guides(color = guide_legend(title = "-log2(p_adjust)"), size = guide_legend(title = "-log2(p_adjust)")) +
+    #     #xlab("\n\nAhead AADT") +
+    #     #theme_minimal() + 
+    #     atheme + 
+    #     #theme(strip.text.y = element_text(angle = 0))  +
+    #     #theme(#axis.text.x=element_blank(),
+    #       #axis.ticks.x=element_blank(),
+    #       #axis.text.y=element_blank(),
+    #       #axis.title.y.left = element_blank(),
+    #       #axis.ticks.y =element_blank() 
+    #       #axis.title.x = element_blank()
+    #     #) +
+    #     theme(
+    #       panel.background = element_rect(fill='transparent'), #transparent panel bg
+    #       plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #       #panel.grid.major = element_blank(), #remove major gridlines
+    #       #panel.grid.minor = element_blank(), #remove minor gridlines
+    #       #legend.background = element_rect(fill='transparent'), #transparent legend bg
+    #       #legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    #       panel.grid.major = element_line(colour = "grey40"), 
+    #       panel.grid.minor = element_line(colour = "grey40") 
+    #       ) +
+    #     theme(axis.title.x.bottom =  element_text(color="grey13"), 
+    #     strip.text = element_text(color = "black", face= "bold"))
+    #     
+    # ggsave(HubHeatPlot, filename = paste("HubHeatPlot", 
+    #                                      Species, Tissue, Type, ii,  sep="_"), path = pathPlots ,
+    #        device='png', dpi=300, width = 12,height = 8)
+        
+
+        HUB_GS_MEs_Filtered_List[[HUB_GS_MEs_Filtered_List_length+1]] <- HUB_C_ANNO_Scatter_omics_Filtered
+        names(HUB_GS_MEs_Filtered_List)[[HUB_GS_MEs_Filtered_List_length+1]] <- MODULE
+      }
+    }
+    HUB_GS_List_Filtered[[HUB_GS_List_Filtered_length+1]] <- HUB_GS_MEs_Filtered_List
+    names(HUB_GS_List_Filtered)[[HUB_GS_List_Filtered_length+1]] <- paste("HUB_GS", Tissue, Type, Analysis, sep="_")
+}   
+
+###########
+#Save Data#
+###########
+saveRDS(HUB_GS_List_Filtered, file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "HUB_GeneSig_Filtered", Date, sep="_"), ".rds", sep=""))))
+
+HUB_GS_List_Filtered <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "HUB_GeneSig_Filtered", Date, sep="_"), ".rds", sep=""))))
+
+```
+
+
+## 8.5 Heatplot GS Hubs
+
+```{r,  message=FALSE,warning=FALSE}
+# HUB_GS_List_Filtered_Plots <- list()
+# HUB_GS_List_Filtered_DFs <- list()
+# for (WGCNAset in names(HUB_GS_List)) {
+# 
+#     Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+#     Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+#     Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+#     WGCNASET<- HUB_GS_List[[WGCNAset]]
+#     ModsOfInterst<- ModsOfInterst_list[[paste("ModsOfInterest", Tissue, Type, sep="_")]]
+#   
+#     for (Trait in names(ModsOfInterst)) {
+#       for (MODULE in names(WGCNASET[names(WGCNASET) %in% rownames(ModsOfInterst[[Trait]])])) {
+#         tryCatch({
+#         HUB_GS_List_Filtered_Plots_length <- length(HUB_GS_List_Filtered_Plots)
+#         HUB_GS_List_Filtered_DFs_length <- length(HUB_GS_List_Filtered_DFs)
+#       
+#           TraitGS <- paste("GS._", Trait, sep="")
+#           MEset <- WGCNASET[[MODULE]]
+#           MEsetGenes <- na.omit(MEset[abs(MEset[[TraitGS]]) > 0.3, ]$Geneid)
+# 
+#           MEset <- MEset %>%
+#             dplyr::filter(ModuleMembership > 0.8, Geneid %in% MEsetGenes)
+#   
+#           if ("Description" %in% colnames(MEset)) {
+#             MEset_long <- as.data.frame(MEset %>%
+#             separate_rows(Description, p.adjust, category, subcategory, sep = "/"))
+#           } else {
+#             MEset_long <- as.data.frame(MEset)
+#           }
+#           
+#           #########################################################################################
+#           #Select Top 5 Genes for TraitSignificance and Connectivity Aside from Pathway Membership#
+#           Genes_Top_Trait<- as.data.frame(MEset_long %>%
+#             dplyr::arrange(desc(abs(!!as.name(TraitGS)))) %>%
+#             dplyr::distinct(Geneid, .keep_all = TRUE) %>%
+#             dplyr::slice(1:5))$Geneid
+#     
+#           Genes_Top_adjSums<- as.data.frame(MEset_long %>%
+#             dplyr::arrange(desc(adjSums)) %>%
+#             dplyr::distinct(Geneid, .keep_all = TRUE) %>%
+#             dplyr::slice(1:5))$Geneid
+#        
+#           ####################################################
+#           #Select top 10 Pathways and top 5 Genes within them#   
+#           if ("Description" %in% colnames(MEset_long)) {
+#             Description_top10<- as.data.frame(MEset_long %>%
+#               dplyr::arrange(desc(p.adjust)) %>%
+#               dplyr::distinct(Description, .keep_all = TRUE) %>% 
+#               dplyr::slice(1:5))$Description
+#             
+#               MEset_long_top10 <- MEset_long[MEset_long$Description %in% Description_top10,]
+#           
+#               Genes_Description_top <- as.data.frame(MEset_long_top10 %>%
+#                 dplyr::group_by(Description) %>%                        
+#                 dplyr::arrange(desc(adjSums)) %>% # Order by adjSums in descending order
+#                 dplyr::distinct(Geneid, .keep_all = TRUE) %>%  # Keep distinct GeneID values
+#                 dplyr::slice(1:5))$Geneid
+#           
+#               MEset_long_top10_top50_Trait5 <- MEset_long_top10[MEset_long_top10$Geneid %in%
+#                                             c(Genes_Description_top),]
+#               MEset_long_top10_Trait5 <- MEset_long[MEset_long$Geneid %in%
+#                                             c(Genes_Top_adjSums,Genes_Top_Trait),]
+#       
+#               MEset_long_top10_top50_Trait5 <- rbind(MEset_long_top10_top50_Trait5, MEset_long_top10_Trait5)
+#           
+#               } else {
+#               print(paste("No Description in", Tissue, Type, MODULE))
+#               MEset_long_top10_top50_Trait5 <- MEset_long[MEset_long$Geneid %in%
+#                                             c(Genes_Top_adjSums,Genes_Top_Trait),]
+#               }
+# 
+#           
+#           MEset_long_top10_top50_Trait5<- MEset_long_top10_top50_Trait5 %>%
+#             dplyr::arrange(desc(abs(!!as.name(TraitGS))))
+#           
+#           write.csv2(MEset_long_top10_top50_Trait5, file = paste0(file.path(path_Output_WGCNA, 
+#                 paste(paste("GS_TraitFilter", Analysis, Tissue, Type, "Corr_filter",
+#                             Corr_Filter, 
+#                             MODULE, Trait, sep="_"), "csv", sep="."))))
+#           
+#           
+#           
+#         
+#           if ("Description" %in% colnames(MEset_long_top10_top50_Trait5)) {
+#             HubHeatPlot <- MEset_long_top10_top50_Trait5 %>%
+#               mutate(Description = reorder(Description, p.adjust),
+#               GeneCombo = reorder(GeneCombo, desc(adjSums))) %>% #!!as.name(TraitGS)
+#               ggplot(., aes(x = GeneCombo, y = Description, fill = !!as.name(TraitGS), size = adjSums)) +
+#               geom_point(shape = 25) 
+#           } else {
+#             MEset_long_top10_top50_Trait5$Description <- "No Enrichment"
+#             HubHeatPlot <- MEset_long_top10_top50_Trait5 %>%
+#               mutate(GeneCombo = reorder(GeneCombo, desc(adjSums))) %>% #!!as.name(TraitGS)
+#               ggplot(., aes(x = GeneCombo, y = Description, fill = !!as.name(TraitGS), size = adjSums)) +
+#               geom_point(shape = 25) 
+#           }
+#             
+#            HubHeatPlot <- HubHeatPlot + 
+#               scale_fill_gradient2(name = paste("GS", sub("GS._", "", TraitGS)), low = "#e06663",
+#                        mid = "white", high = "#327eba") +
+#               scale_size_continuous(name = expression("Connectivity K"[IN]), range = c(3, 10)) +
+#               theme(axis.text.x = element_text(angle = 60, hjust = 1))  +  
+#               theme_minimal() + atheme + 
+#               theme(
+#                 panel.background = element_rect(fill='transparent'), #transparent panel bg
+#                 plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+#                 panel.grid.major = element_line(colour = "grey40"), 
+#                 panel.grid.minor = element_line(colour = "grey40"), 
+#                 legend.title = element_text( size = 9),
+#                 legend.text = element_text(size = 9,face = "bold")) +
+#               theme(axis.title.x.bottom =  element_text(color="grey13"), 
+#               strip.text = element_text(color = "black", face= "bold")) +
+#              labs(x = "GeneID [Human-Zander]", y = "KEGG Pathway Description") +
+#              ggtitle(paste("Heatplot for Top5 Genes in pathways, in connectivity and corrleation to", Trait, "for",
+#                            paste(Tissue, Type, sub("ME", "", MODULE), sep="-"))) 
+#            
+#     ggsave(HubHeatPlot, filename = paste(paste(
+#                                          Species, Year, Season, Analysis, Tissue, Type, Trait, "HubHeatPlot_Filtered", sub("ME", "RNA", MODULE),  sep="_"),".png", sep=""), path = pathPlots ,
+#            device='png', dpi=300, width = 10,height = 5)
+#       }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+#     
+#     HUB_GS_List_Filtered_Plots[[HUB_GS_List_Filtered_Plots_length+1]] <- HubHeatPlot
+#     names(HUB_GS_List_Filtered_Plots)[[HUB_GS_List_Filtered_Plots_length+1]] <- paste("HubHeatPlot", Tissue, Type, MODULE, Trait, sep="_")
+#     
+#     HUB_GS_List_Filtered_DFs[[HUB_GS_List_Filtered_DFs_length+1]] <- MEset_long_top10_top50_Trait5
+#     names(HUB_GS_List_Filtered_DFs)[[HUB_GS_List_Filtered_DFs_length+1]] <- paste("HubHeatDF", Tissue, Type, MODULE, Trait, sep="_")
+#     
+#     }
+#   }
+# }  
+```
+
+
+
+## 8.6 Module-Gene Heatmap
+
+```{r,  message=FALSE,warning=FALSE, fig.width=10, fig.height=8}
+
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+tpm_value <- 1; print(paste("TPM value =", tpm_value))
+
+Module_Gene_Heatmap_list <- list()
+for (WGCNAset in names(WGCNA_list)[grepl("RNA", names(WGCNA_list))]) {
+  
+  tryCatch({
+    require(tidyverse); require(WGCNA)
+  
+  Module_Gene_Heatmap_list_length <- length(Module_Gene_Heatmap_list)
+                                            
+  print(WGCNAset)
+  Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+  Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+  
+  omics_data <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("omics_data", names(WGCNA_list[[WGCNAset]]))][[1]])
+  MEs  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("MEs", names(WGCNA_list[[WGCNAset]]))][[1]])
+  SAM  <- as.data.frame(WGCNA_list[[WGCNAset]][grepl("datTraits", names(WGCNA_list[[WGCNAset]]))][[1]])
+  
+  TPM  <- tpms[[names(tpms)[grepl(Tissue, names(tpms))]]]
+  TPM <- TPM[names(TPM) %in% rownames(SAM)]
+  TPM$Geneid <- rownames(TPM)
+  TPM  <-dplyr::left_join(TPM, SLUCGeneManual[c("Geneid", "Human_SYMBOL_Manual")])
+  TPM$Human_SYMBOL_Manual_unique <- make.unique(TPM$Human_SYMBOL_Manual, sep = "_") 
+  #This is important because WGCNA replacec special charactersin in gene names by dot#
+  TPM$GeneidWGCNA <-gsub("[[:punct:]]+", ".", TPM$Geneid) 
+
+  
+  HUBs <- HUB_GS_List[[paste("HUB_GS", Tissue, Type, Analysis, sep="_")]]
+  
+      Module_list <- list()
+      
+      for (Hub in names(HUBs)) {
+        tryCatch({
+          
+          Module_list_length <- length(Module_list)
+          
+          Samples <-  if (Tissue == "Gill" ) {
+          Samples <- Samples_RNA_Gill }else {
+          Samples <- Samples_RNA_Liver }
+
+          #Selection of  Sample file
+          SAMDF <- if (Tissue == "Gill" ) {
+          SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+
+          FILENAME2   <- paste(paste(Species, Year, Season, Analysis, Tissue, Type, "TPM-Module-Heatmap", sub("ME", "RNA", Hub), sep="_"), ".png", sep="")
+          
+          TITLE       <- draw_label_themeRKwhite(
+                        paste(Species, Tissue, Type,Analysis,  paste(Type,sub("ME", "", Hub)), sep="_"),
+                        element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+    
+          HUB <- HUBs[[Hub]]
+    
+          Input     <- TPM[TPM$GeneidWGCNA %in% HUB$Geneid, ]
+          #print(paste(Hub, "genes before TPM filter", tpm_value, ":", dim(Input)[1]))
+          Input     <- Input[(rowSums(Input > tpm_value) >= 3),] #TPM Filter
+          #print(paste(Hub, "genes after TPM filter", tpm_value, ":", dim(Input)[1]))
+
+          rownames(Input) <- Input$Human_SYMBOL_Manual_unique
+        
+    
+          GeneHeatPlotRKnoClust_SL_tpm(Species = Species, Input = Input, Samples = Samples, SAMDF = SAMDF,  
+                                 TITLE = TITLE, filename= FILENAME2) 
+          
+          Module_list[[Module_list_length+1]] <- hmap
+          names(Module_list)[[Module_list_length+1]] <- Hub
+          
+       ##################
+       #Plot a selection#
+       ##################
+        if (Type == "RNA" & Tissue == "Gill" & Hub %in% c("ME2", "ME7", "ME11")) {
+          plot(GeneHeatPlotRKnoClust_SL_tpm_plot)
+        } else if (Tissue == "Liver" & Hub %in% c("ME1", "ME3", "ME6", "ME7")) {
+          plot(GeneHeatPlotRKnoClust_SL_tpm_plot)
+        } else if (Type == "SSU" & Hub %in% c("ME1", "ME2", "ME3")) {
+          plot(GeneHeatPlotRKnoClust_SL_tpm_plot)
+        } else {
+        # print("Plots are saved to the pathPlots")
+        }
+          
+          
+        }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+      }
+
+  
+      Module_Gene_Heatmap_list[[Module_Gene_Heatmap_list_length+1]] <- Module_list
+      names(Module_Gene_Heatmap_list)[[Module_Gene_Heatmap_list_length+1]] <- paste("Module_Gene_Heatmap", Type, Tissue,  sep="_")
+  
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+}
+
+```
+
+# -
+
+# 9  Summary Barplot Gill&Liver Pathways
+
+```{r,  WGCNA Barplot Tissue Pathways, message=FALSE,warning=FALSE, fig.width=18, fig.height=10}
+######################################################################
+#Pathways are sliced to top 10 if more than 10 pathways in one Module#
+######################################################################
+
+HUB_GS_List <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "HUB_GeneSig", Date, sep="_"), ".rds", sep=""))))
+
+
+ModsOfInterst_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, "ModsOfInterst_list", Date, sep="_"), ".rds", sep=""))))
+
+Abiotics <- c("O2","Salinity","SecchiDepth")
+
+###########################################################
+#Modify ModsOfInterst to only Positive values for Salinity#
+###########################################################
+for (i in names (ModsOfInterst_list)) {
+  ModsOfInterst_list[[i]]$Salinity <-
+    ModsOfInterst_list[[i]]$Salinity[ModsOfInterst_list[[i]]$Salinity[1] > 0, , drop = FALSE]
+}
+
+HUB_GS_List_Filtered_DFs <- list()
+for (WGCNAset in names(HUB_GS_List)) {
+
+    Tissue <- sub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", WGCNAset)
+    Type   <- sub(paste0(".*", "(RNA|SSU)", ".*"), "\\1", WGCNAset)
+    Analysis   <- sub(paste0(".*", "(WGCNA)", ".*"), "\\1", WGCNAset)
+    WGCNASET<- HUB_GS_List[[WGCNAset]]
+    ModsOfInterst<- ModsOfInterst_list[[paste("ModsOfInterest", Tissue, Type, sep="_")]]
+    ###########################################
+    #Remove all ME0 and only focus on Abiotics#
+    ModsOfInterst <- ModsOfInterst[names(ModsOfInterst) %in% Abiotics]
+    remove_rows_ME0 <- function(df) {
+      df[!(rownames(df) == "ME0"), ]}
+    ModsOfInterst <- lapply(ModsOfInterst, remove_rows_ME0)
+    
+    
+    for (Trait in names(ModsOfInterst)) {
+      
+      for (MODULE in names(WGCNASET[names(WGCNASET) %in% rownames(ModsOfInterst[[Trait]])])) {
+        print(paste(Trait, MODULE))
+        HUB_GS_List_Filtered_DFs_length <- length(HUB_GS_List_Filtered_DFs)
+      
+          TraitGS <- paste("GS._", Trait, sep="")
+          MEset <- WGCNASET[[MODULE]]
+          MEsetGenes <- na.omit(MEset[abs(MEset[[TraitGS]]) > 0.3, ]$Geneid)
+
+          MEset <- MEset %>%
+            dplyr::filter(ModuleMembership > 0.8, Geneid %in% MEsetGenes)
+  
+          if ("Description" %in% colnames(MEset)) {
+            MEset_long <- as.data.frame(MEset %>%
+            separate_rows(Description, p.adjust, category, subcategory, sep = "/"))
+          } else {
+            MEset_long <- as.data.frame(MEset)
+          }
+          
+
+          ###################################
+          #Select top 10 Pathways per Module#
+          ####################################
+          if ("Description" %in% colnames(MEset_long)) {
+            Description_top10<- as.data.frame(MEset_long %>%
+              dplyr::arrange(desc(p.adjust)) %>%
+              dplyr::distinct(Description, .keep_all = TRUE) %>% 
+              dplyr::slice(1:10))$Description
+            
+              MEset_long_top10 <- MEset_long[MEset_long$Description %in% Description_top10,]
+          
+              # Genes_Description_top <- as.data.frame(MEset_long_top10 %>%
+              #   dplyr::group_by(Description) %>%                        
+              #   dplyr::arrange(desc(adjSums)) %>% # Order by adjSums in descending order
+              #   dplyr::distinct(Geneid, .keep_all = TRUE) 
+              #   #%>%  dplyr::slice(1:5))$Geneid
+              # )
+              
+              # MEset_long_top10_top50_Trait5 <- MEset_long_top10[MEset_long_top10$Geneid %in%
+              #                               c(Genes_Description_top),]
+              # MEset_long_top10_Trait5 <- MEset_long[MEset_long$Geneid %in%
+              #                               c(Genes_Top_adjSums,Genes_Top_Trait),]
+              # 
+              # MEset_long_top10_top50_Trait5 <- rbind(MEset_long_top10_top50_Trait5, MEset_long_top10_Trait5)
+          
+              } else {
+              print(paste("No Description in", Tissue, Type, MODULE, Trait))
+              MEset_long_top10 <- MEset_long
+              }
+
+    HUB_GS_List_Filtered_DFs[[HUB_GS_List_Filtered_DFs_length+1]] <- MEset_long_top10
+    names(HUB_GS_List_Filtered_DFs)[[HUB_GS_List_Filtered_DFs_length+1]] <- paste("HubHeatDF", Tissue, Type, MODULE, Trait, sep="_")
+
+      }
+      
+  }
+}  
+
+
+WGCNA_PatwaysTissueBarplot <- list()
+
+for (Abiotic in Abiotics) {
+  WGCNA_PatwaysTissueBarplotLength <- length(WGCNA_PatwaysTissueBarplot)
+  
+  ################
+  #Liver and Gill#
+  ################
+
+  Bound_Hubs_Abiotic_Gill <- plyr::rbind.fill(HUB_GS_List_Filtered_DFs[grepl(Abiotic,
+          names(HUB_GS_List_Filtered_DFs)) & grepl("Gill", names(HUB_GS_List_Filtered_DFs))]) 
+  Bound_Hubs_Abiotic_Gill$Module <- paste("Gill-RNA", Bound_Hubs_Abiotic_Gill$Module, sep="-")
+  Bound_Hubs_Abiotic_Gill$TissueType <- paste("Gill-RNA")
+  
+  Bound_Hubs_Abiotic_Liver <- plyr::rbind.fill(HUB_GS_List_Filtered_DFs[grepl(Abiotic,
+            names(HUB_GS_List_Filtered_DFs)) & grepl("Liver", names(HUB_GS_List_Filtered_DFs))]) 
+  Bound_Hubs_Abiotic_Liver$Module <- paste("Liver-RNA", Bound_Hubs_Abiotic_Liver$Module, sep="-")
+  Bound_Hubs_Abiotic_Liver$TissueType <- paste("Liver-RNA")
+  
+  Bound_Hubs_Abiotic <- plyr::rbind.fill(Bound_Hubs_Abiotic_Liver, Bound_Hubs_Abiotic_Gill)
+  
+  Bound_Hubs_Abiotic <-  Bound_Hubs_Abiotic[!is.na(Bound_Hubs_Abiotic$Description),]
+
+  #Bound_Hubs_Abiotic[Bound_Hubs_Abiotic$subcategory == "Global and overview maps",]$subcategory <-   "Metabolism"
+
+  if ("Global and overview maps" %in% Bound_Hubs_Abiotic$subcategory) {
+    Bound_Hubs_Abiotic[Bound_Hubs_Abiotic$subcategory %in%
+    "Global and overview maps",]$subcategory <- "Metabolism"
+  }
+
+  if ("Thermogenesis" %in% Bound_Hubs_Abiotic$Description) {
+  Bound_Hubs_Abiotic <- Bound_Hubs_Abiotic[-which(Bound_Hubs_Abiotic$Description %in% c("Thermogenesis")), ]
+  }
+  
+  #######################################
+  #Order the subcategories for categorys#
+  Bound_Hubs_Abiotic$subcategory <- factor(Bound_Hubs_Abiotic$subcategory, levels =
+            unique(Bound_Hubs_Abiotic$subcategory[order(Bound_Hubs_Abiotic$category)]))
+
+  #########
+  #Barplot#
+  #########
+  
+  Abiotic_tissue<- Bound_Hubs_Abiotic  %>%
+    group_by(Description, TissueType, subcategory) %>%  
+    summarise(Count = n()) 
+
+  #Abiotic_tissue$DescriptionWrap <- sjmisc::word_wrap(Abiotic_tissue$Description, 40)
+  
+  Abiotic_tissue_plot <- Abiotic_tissue %>%
+    ggplot(., aes(x=Count, y=Description, fill = TissueType))+
+    geom_bar(stat="identity") +
+    labs(title = paste("Module-Pathways correlated with", Abiotic),
+       x = "",
+       y = "") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_x_sqrt(breaks = c(10, 100, 200), 
+                 limits =c(0, 200)) + 
+    #scale_x_continuous(limits = c(0, 100)) +
+    #scale_fill_brewer(palette = "Set1")  +
+    facet_grid(subcategory ~., scales = "free", space = "free") +
+   #xlab("\n\nAhead AADT") +
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y.left = element_blank(),
+              strip.text.y.right = element_text(angle = 0,  hjust = 0, 
+              size=10, face="bold", color= "black"), 
+              strip.text.x.bottom = element_blank(),
+              legend.text = element_text(size=10),
+              legend.title  = element_blank())+
+        theme(panel.spacing = unit(0, "lines"), 
+                       panel.spacing.y=unit(0.2, "lines"), 
+              legend.position = "none")
+  
+
+  HEIGHt <- Bound_Hubs_Abiotic  %>%
+    group_by(Description, TissueType, subcategory) %>%  
+    summarise(Count = n())
+  HEIGHT <- length(unique(HEIGHt$subcategory))*0.4
+  
+  
+ggsave(Abiotic_tissue_plot, filename = paste(paste(Species, Year, Season, Analysis, "PatwaysTissueBarplot", Abiotic, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10, height = HEIGHT)
+
+WGCNA_PatwaysTissueBarplot[[WGCNA_PatwaysTissueBarplotLength+1]] <- Abiotic_tissue_plot
+
+names(WGCNA_PatwaysTissueBarplot)[[WGCNA_PatwaysTissueBarplotLength+1]] <- paste(Abiotic, "WGCNA_PatwaysTissueBarplot", sep="_")
+
+}
+```
+
+### - Figure 3A
+
+```{r, message=FALSE,warning=FALSE, fig.width=15, fig.height=10}
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(WGCNA_PatwaysTissueBarplot$O2_WGCNA_PatwaysTissueBarplot, labels = c("A"), ncol = 1) -> part_1
+cowplot::plot_grid(WGCNA_PatwaysTissueBarplot$SecchiDepth_WGCNA_PatwaysTissueBarplot, WGCNA_PatwaysTissueBarplot$Salinity_WGCNA_PatwaysTissueBarplot, labels = c("B", "C"), ncol = 1, rel_widths = c(1,1)) -> part_2
+cowplot::plot_grid(part_1, part_2, labels = c("", ""), rel_widths = c(1,1), ncol = 2) -> part_3
+ggsave(part_3, filename = paste(paste(Species, Year, Season, Analysis, "PatwaysTissueBarplot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 18,height = 10)
+part_3
+```
+
+
+
+
+
+# -
+
+# 10 Network Visualization Cytoscape
+
+https://cytoscape.org/cytoscape-automation/for-scripters/R/notebooks/Top-genes-and-coexpression.nb.html
+
+Instead of querying existing resources look for correlations in your own dataset to find out which genes have similar expression. There are many tools that can analyze your data for correlation. A popular tool is Weighted Gene Correlation Network Analysis (WGCNA) which takes expression data and calculates functional modules. As a simple example we can transform our expression dataset into a correlation matrix.
+
+Using the Cytoscape App, aMatReader, we transform our adjacency matrix into an interaction network. First we filter the correlation matrix to contain only the strongest connections (for example, only correlations greater than 0.9).
+
+
+```{r,  message=FALSE,warning=FALSE}
+WGCNA_list <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(Species, Year, Season, Analysis, Date, sep="_"), ".rds", sep=""))))
+```
+
+## 10.1 Genes
+
+
+```{r,  message=FALSE,warning=FALSE}
+#You need to download and Open Cytoscape on your computer for this to work 
+#http://www.bioconductor.org/packages/devel/bioc/vignettes/rWikiPathways/inst/doc/Pathway-Analysis.html
+#https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+# library(tidyverse)
+# library(dplyr)
+# library(plyr)
+# library(clusterProfiler)
+# library(enrichplot)
+# library(ggplot2)
+# library("org.Hs.eg.db")
+# library("org.Dr.eg.db")
+# library("org.Mm.eg.db")
+# library(DOSE)
+# library(rWikiPathways)
+# library(jsonlite)
+# library("DOSE")
+# library("GO.db")
+# library("GSEABase")
+# library("dplyr")
+# library("tidyr")
+# library("stringr")
+# library("RColorBrewer")
+# library("rWikiPathways")
+# library("RCy3")
+
+###########
+#Cytoscape#
+###########
+#list of cytoscape apps to install
+#Open Cytoscape
+ # cytoscapePing() 
+# #list of app to install Do that once!
+# installApp('WikiPathways') 
+# installApp('CyTargetLinker') 
+# installApp('stringApp') 
+# installApp('enrichmentMap')
+# installApp('autoannotate')
+# installApp('wordcloud')
+# installApp('stringapp')
+# installApp('aMatReader')
+# installApp('clustermaker2')
+# cytoscapeVersionInfo ()
+# installApp('STRINGapp')  
+# installApp('aMatReader')
+# installApp('clusterMaker2')
+# The following setting is important, do not omit.
+
+# library(WGCNA)
+# options(stringsAsFactors = FALSE);
+# 
+# 
+# datExpr <- WGCNA_list$RNA_Gill_WGCNA$RNA_Gill_omics_data
+# moduleColors <- WGCNA_list$RNA_Gill_WGCNA$RNA_Gill_moduleColors
+# GeneAnno <- WGCNA_list$RNA_Gill_WGCNA$RNA_Gill_GeneAnno
+# 
+# TOM = TOMsimilarityFromExpr(datExpr, power = 6, nThreads =8);
+# 
+# 
+# for (i in names(GeneAnno)){
+#   modules = as.numeric(sub("GeneAnno_ME", "", i))
+#   
+#   colors = labels2colors(modules)
+#   genes = names(datExpr)
+#   inModule = is.finite(match(moduleColors, colors));
+#   modGenes = genes[inModule];
+#   modGenesAnno <-SLUCGeneManual[SLUCGeneManual$rowname %in%
+#                                             modGenes,]
+#   modGenesdf <- data.frame(rowname = modGenes)
+#   modGenesAnnosubset <- modGenesAnno[modGenesAnno$rowname %in% modGenesdf$rowname,]
+# 
+#   result <- merge(modGenesAnnosubset, modGenesdf, all = TRUE)
+#   result <-result %>% mutate(TomAnno = coalesce(Human_SYMBOL_Manual, rowname))
+# 
+#   # Reorder result based on the order_vector
+#   order_vector <- order(match(result$rowname, modGenesdf$rowname))
+#   result_ordered <- result[order_vector, ]
+#   modGenesHuman_SYMBOL_Manual <- make.unique(result_ordered$TomAnno, sep = "_")
+# 
+#   # Select the corresponding Topological Overlap
+#   modTOM = TOM[inModule, inModule];
+#   dimnames(modTOM) = list(modGenesHuman_SYMBOL_Manual, modGenesHuman_SYMBOL_Manual)
+#   
+#   # Export the network into edge and node list files Cytoscape can read
+#   cyt = exportNetworkToCytoscape(modTOM,
+#   edgeFile = paste(file.path(path_Output_WGCNA,"CytoscapeInput-edges-"), 
+#                    paste(modules, collapse="-"), ".txt", sep=""),
+#   nodeFile = paste(file.path(path_Output_WGCNA, "CytoscapeInput-nodes-"), 
+#                    paste(modules, collapse="-"), ".txt", sep=""),
+#   weighted = TRUE,
+#   threshold = 0.5,
+#   nodeNames = modGenes,
+#   altNodeNames = modGenesHuman_SYMBOL_Manual,
+#   nodeAttr = moduleColors[inModule]);
+# }
+#   
+# 
+# for (i in names(GeneAnno)){
+#   modules = as.numeric(sub("GeneAnno_ME", "", i))
+#   
+#   colors = labels2colors(modules)
+#   
+#   edge <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-edges-", modules, ".txt", sep="")))
+#   colnames(edge)
+#   colnames(edge) <- c("source", "target","weight","direction","fromAltName","toAltName")
+# 
+#   node <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-nodes-", modules, ".txt", sep="")))
+#   colnames(node)  
+#   colnames(node) <- c("id","altName","node_attributes") 
+# 
+#   createNetworkFromDataFrames(node,edge, title=paste(modules, "network", sep=""), collection="DataFrame Example")
+# 
+#   ################ customise the network visualization ##################################
+#   # use other pre-set visual style
+#   setVisualStyle('Marquee')
+# 
+#   # set up my own style
+#   style.name = "myStyle"
+#   defaults <- list(NODE_SHAPE="diamond",
+#                  NODE_SIZE=10,
+#                  EDGE_TRANSPARENCY=120,
+#                  NODE_LABEL_POSITION="W,E,c,0.00,0.00")
+#   nodeLabels <- mapVisualProperty('node label','id','p')
+#   nodeFills <- mapVisualProperty('node fill color','node_attributes','d',c("A","B"), c("#FF9900","#66AAAA"))
+#   arrowShapes <- mapVisualProperty('Edge Target Arrow  
+#                                    Shape','interaction','d',c("activates","inhibits","interacts"),c("Arrow","T","None"))
+#   edgeWidth <- mapVisualProperty('edge width','weight','p')
+# 
+#   createVisualStyle(style.name, defaults, list(nodeLabels,nodeFills,arrowShapes,edgeWidth))
+#   setVisualStyle(style.name)
+#   
+# }
+#   
+# 
+# 
+# 
+# #Import Networks to Cytoscape  
+# cytoscapePing () # make sure cytoscape is open
+# cytoscapeVersionInfo ()
+# 
+# for (i in names(GeneAnno)){
+#   modules = as.numeric(sub("GeneAnno_ME", "", i))
+#   
+#   colors = labels2colors(modules)
+#   
+#   edge <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-edges-", modules, ".txt", sep="")))
+#   colnames(edge)
+#   colnames(edge) <- c("source", "target","weight","direction","fromAltName","toAltName")
+# 
+#   node <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-nodes-", modules, ".txt", sep="")))
+#   colnames(node)  
+#   colnames(node) <- c("id","altName","node_attributes") 
+# 
+#   createNetworkFromDataFrames(node,edge, title=paste(modules, "network", sep=""), collection="DataFrame Example")
+# 
+#   ################ customise the network visualization ##################################
+#   # use other pre-set visual style
+#   setVisualStyle('Marquee')
+# 
+#   # set up my own style
+#   style.name = "myStyle"
+#   defaults <- list(NODE_SHAPE="diamond",
+#                  NODE_SIZE=10,
+#                  EDGE_TRANSPARENCY=120,
+#                  NODE_LABEL_POSITION="W,E,c,0.00,0.00")
+#   nodeLabels <- mapVisualProperty('node label','id','p')
+#   nodeFills <- mapVisualProperty('node fill color','node_attributes','d',c("A","B"), c("#FF9900","#66AAAA"))
+#   arrowShapes <- mapVisualProperty('Edge Target Arrow  
+#                                    Shape','interaction','d',c("activates","inhibits","interacts"),c("Arrow","T","None"))
+#   edgeWidth <- mapVisualProperty('edge width','weight','p')
+# 
+#   createVisualStyle(style.name, defaults, list(nodeLabels,nodeFills,arrowShapes,edgeWidth))
+#   setVisualStyle(style.name)
+# }
+```
+
+#### 10.1.1 ORA Cytoscape 
+
+```{r,  message=FALSE,warning=FALSE}
+
+# ego<- ORA_list$Gill_RNA_WGCNA_MODULES_Corr_Filter_0.8$EGOS
+
+#########################
+#Cytoscape Visualization#
+#########################
+############
+#Enrichtmap#
+############
+# Create an enrichment map with the returned g:Profiler results. An enrichment map is a different sort of network. Instead of nodes representing genes, nodes represent pathways or functions. Edges between these pathways or functions represent shared genes or pathway crosstalk. An enrichment map is a way to visualize your enrichment results to help reduce redundancy and uncover main themes. Pathways can also be explored in detail using the features available through the App in Cytoscape.
+#https://bioconductor.github.io/BiocWorkshops/cytoscape-automation-in-r-using-rcy3.html
+#  A <- list()
+# for (i in names(.GlobalEnv[[name]]$`egoCL-Liver`)) {
+#  B <- as.data.frame(.GlobalEnv[[name]]$`egoCL-Liver`[[i]])
+#  A[[i]] <- B}
+  #A <- ldply(A, data.frame) Collapses the List object to one dataframe, might be more suitable to do per Cluster
+# for (i in names(ego)[grepl("EGO", names(ego))]) {
+#   tryCatch({ 
+#   g <- paste(i)
+#   for (ii in names(ego[[i]])) {
+#     tryCatch({ 
+#     B <- as.data.frame(ego[[i]][[ii]])
+#     gg <- paste(names(ego[[i]][ii]))
+#     ## extract a dataframe with results from object of type enrichResult
+#     egobp.results.df <- B
+#     ## create a new column for term size from BgRatio
+#     egobp.results.df$term.size <- gsub("/(\\d+)", "", B$BgRatio)
+#     ## filter for term size to keep only term.size => 3, gene count >= 5 and subset
+#     #egobp.results.df <- 
+#     #  egobp.results.df[which(egobp.results.df[,'term.size'] >= 3 & egobp.results.df[,'Count'] >= 5),]
+#     
+#     egobp.results.df <- egobp.results.df[c("ID", "Description", "pvalue", "qvalue", "geneID")]
+#     ## format gene list column
+#     egobp.results.df$geneID <- gsub("/", ",", egobp.results.df$geneID)
+#     ## add column for phenotype
+#     egobp.results.df <- cbind(egobp.results.df, phenotype=1)
+#     egobp.results.df <- egobp.results.df[, c(1, 2, 3, 4, 6, 5)]
+#     ## change column headers
+#     colnames(egobp.results.df) <- c("Name","Description", "pvalue","qvalue", "phenotype","genes")
+#     egobp.results.filename <-
+#               paste0(file.path(path_Output_WGCNA, "Cytoscape-ORA-07.06.2022-"), save_name, "-", gg, ".txt")
+#     write.table(egobp.results.df,egobp.results.filename,col.name=TRUE,sep="\t",row.names=FALSE,quote=FALSE)
+#     CPres <-read.delim(file = 
+#               paste0(file.path(path_Output_WGCNA, "Cytoscape-ORA-07.06.2022-"), save_name, "-", gg, ".txt"))
+#     print(head(CPres))
+#     #https://bioconductor.github.io/BiocWorkshops/cytoscape-automation-in-r-using-rcy3.html
+#     em_command = paste('enrichmentmap build analysisType="generic" ', 
+#                    'pvalue=',"0.05", 'qvalue=',"0.05",
+#                    'similaritycutoff=',"0.25",
+#                    'coeffecients=',"JACCARD",
+#                    'enrichmentsDataset1=',egobp.results.filename ,sep=" ")
+#    em_network_suid <- commandsRun(em_command)
+#    renameNetwork(gg, network=as.numeric(em_network_suid))
+#    #Save Picture#
+#    cluster_png_file_name <- 
+#      file.path(paste(path_Output_WGCNA, "Cytoscape-ORA-07.06.2022-", save_name, "-", gg, ".png",sep=""))
+#   if(file.exists(cluster_png_file_name)){
+#   #cytoscape hangs waiting for user response if file already exists.  Remove it first
+#   file.remove(cluster_png_file_name)} 
+#   #export the network
+#   exportImage(cluster_png_file_name, type = "png")
+#   #Annotate the Enrichment map to get the general themes that are found in the enrichment results of cluster 
+#   #get the column from the nodetable and node table
+#   nodetable_colnames <- getTableColumnNames(table="node",  network =  as.numeric(em_network_suid))
+#   descr_attrib <- nodetable_colnames[grep(nodetable_colnames, pattern = "GS_DESCR")]
+#   #Autoannotate the network
+#   autoannotate_url <- paste("autoannotate annotate-clusterBoosted labelColumn=", 
+#                             descr_attrib," maxWords=3 ",      sep="")
+#   current_name <-commandsGET(autoannotate_url)
+#   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+#   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+# }  
+
+```
+
+## 10.2 Bacteria
+
+##### - Figure 3B
+
+Exclucded for knitting, works fine 
+
+```{r,  message=FALSE,warning=FALSE}
+#You need to download and Open Cytoscape on your computer for this to work 
+#http://www.bioconductor.org/packages/devel/bioc/vignettes/rWikiPathways/inst/doc/Pathway-Analysis.html
+#https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+# library(tidyverse)
+# library(dplyr)
+# library(plyr)
+# library(clusterProfiler)
+# library(enrichplot)
+# library(ggplot2)
+# library("org.Hs.eg.db")
+# library("org.Dr.eg.db")
+# library("org.Mm.eg.db")
+# library(DOSE)
+# library(rWikiPathways)
+# library(jsonlite)
+# library("DOSE")
+# library("GO.db")
+# library("GSEABase")
+# library("dplyr")
+# library("tidyr")
+# library("stringr")
+# library("RColorBrewer")
+# library("rWikiPathways")
+# library("RCy3")
+# 
+# ###########
+# #Cytoscape#
+# ###########
+# #list of cytoscape apps to install
+# #Open Cytoscape
+#  cytoscapePing() 
+# # #list of app to install Do that once!
+# # installApp('WikiPathways') 
+# # installApp('CyTargetLinker') 
+# # installApp('stringApp') 
+# # installApp('enrichmentMap')
+# # installApp('autoannotate')
+# # installApp('wordcloud')
+# # installApp('stringapp')
+# # installApp('aMatReader')
+# # installApp('clustermaker2')
+# # cytoscapeVersionInfo ()
+# # installApp('STRINGapp')  
+# # installApp('aMatReader')
+# # installApp('clusterMaker2')
+# # The following setting is important, do not omit.
+# library(WGCNA)
+# options(stringsAsFactors = FALSE);
+# 
+# 
+# 
+# datExpr <- WGCNA_list$SSU_Gill_WGCNA$SSU_Gill_omics_data
+# moduleColors <- WGCNA_list$SSU_Gill_WGCNA$SSU_Gill_moduleColors
+# GeneAnno <- WGCNA_list$SSU_Gill_WGCNA$SSU_Tax
+# TaxAnno <- WGCNA_list$SSU_Gill_WGCNA$SSU_Tax$All
+# TOM = TOMsimilarityFromExpr(datExpr, power = 6, nThreads =8);
+# 
+# 
+# for (i in names(GeneAnno[grepl("SSU", names(GeneAnno))])){
+#   modules = as.numeric(sub("SSU", "", i))
+#   
+#   colors = labels2colors(modules)
+#   genes = names(datExpr)
+#   inModule = is.finite(match(moduleColors, colors));
+#   modGenes = genes[inModule];
+#   
+#   modGenesAnno <-TaxAnno[TaxAnno$ASV %in%modGenes,]
+#   modGenesAnno$rowname <- modGenesAnno$ASV
+#   modGenesdf <- data.frame(rowname = modGenes)
+#   modGenesAnnosubset <- modGenesAnno[modGenesAnno$rowname %in% modGenesdf$rowname,]
+# 
+#   result <- merge(modGenesAnnosubset, modGenesdf, all = TRUE)
+#   result <-result %>% mutate(TomAnno = rowname)
+# 
+#   # Reorder result based on the order_vector
+#   order_vector <- order(match(result$rowname, modGenesdf$rowname))
+#   result_ordered <- result[order_vector, ]
+#   modGenesHuman_SYMBOL_Manual <- make.unique(result_ordered$TomAnno, sep = "_")
+# 
+#   # Select the corresponding Topological Overlap
+#   modTOM = TOM[inModule, inModule];
+#   dimnames(modTOM) = list(modGenesHuman_SYMBOL_Manual, modGenesHuman_SYMBOL_Manual)
+#   
+#   # Export the network into edge and node list files Cytoscape can read
+#   #https://support.bioconductor.org/p/95965/
+#   # My operational answer is to select a threshold that keeps the file size manageable, then use     filtering in Cytoscape to interactively choose a threshold that results in an informative plot. This assumes that Cytoscape is only used for visualization; if you're going to use Cytoscape for further analysis, you should probably set the threshold to zero.
+#   #https://www.biostars.org/p/9514423/
+#   
+#   cyt = exportNetworkToCytoscape(modTOM,
+#   edgeFile = paste(file.path(path_Output_WGCNA,"CytoscapeInput-ASV-edges-"), 
+#                    paste(modules, collapse="-"), ".txt", sep=""),
+#   nodeFile = paste(file.path(path_Output_WGCNA, "CytoscapeInput-ASV-nodes-"), 
+#                    paste(modules, collapse="-"), ".txt", sep=""),
+#   weighted = TRUE,
+#   threshold = 0.1,
+#   nodeNames = modGenes,
+#   altNodeNames = modGenesHuman_SYMBOL_Manual,
+#   nodeAttr = moduleColors[inModule]);
+# }
+#   
+# #Import Networks to Cytoscape  
+# cytoscapePing () # make sure cytoscape is open
+# cytoscapeVersionInfo ()
+# for (i in names(GeneAnno[grepl("SSU", names(GeneAnno))])){
+#       tryCatch({ 
+# 
+#   modules = as.numeric(sub("SSU", "", i))
+#   
+#   colors = labels2colors(modules)
+#   
+#   edge <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-ASV-edges-", modules, ".txt", sep="")))
+#   colnames(edge)
+#   colnames(edge) <- c("source", "target","weight","direction","fromAltName","toAltName")
+# 
+#   node <- read.delim(file.path(path_Output_WGCNA, paste("CytoscapeInput-ASV-nodes-", modules, ".txt", sep="")))
+#   colnames(node)  
+#   colnames(node) <- c("id","altName","node_attributes") 
+# 
+#   createNetworkFromDataFrames(node,edge, title=paste(modules, "network", sep=""), collection="DataFrame Example")
+# 
+#   ################ customise the network visualization ##################################
+#   # use other pre-set visual style
+#   setVisualStyle('Marquee')
+#   # set up my own style
+#   style.name = "myStyle"
+#   defaults <- list(NODE_SHAPE="diamond",
+#                  NODE_SIZE=10,
+#                  EDGE_TRANSPARENCY=120,
+#                  NODE_LABEL_POSITION="W,E,c,0.00,0.00")
+#   nodeLabels <- mapVisualProperty('node label','id','p')
+#   nodeFills <- mapVisualProperty('node fill color','node_attributes','d',c("A","B"),
+#                                  c("#FF9900","#66AAAA"))
+#   arrowShapes <- mapVisualProperty('Edge Target Arrow  
+#                                    Shape','interaction','d',c("activates","inhibits","interacts"),c("Arrow","T","None"))
+#   edgeWidth <- mapVisualProperty('edge width','weight','p')
+# 
+#   createVisualStyle(style.name, defaults, list(nodeLabels,nodeFills,arrowShapes,edgeWidth))
+#   setVisualStyle(style.name)
+# }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+
+  
+
+
+
+
+# For Visualization in Figure 3B change to cytoscape and do: 
+# Cytoscape -> Import -> Table -> SSU_Data with Column relMeanASV -> 
+#Styles -> LabelSize and LableText continous 
+#https://www.biostars.org/p/192885/#192910
+#https://www.biostars.org/p/454313/
+
+#https://manual.cytoscape.org/en/stable/Styles.html#tutorial-3-creating-a-new-style-with-a-continuous-mapping
+#https://manual.cytoscape.org/en/stable/Styles.html
+#https://www.biostars.org/p/454866/
+```
+
+# -

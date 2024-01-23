@@ -1,0 +1,3398 @@
+---
+title: "SL_WGCNA_Part1_16.01.2024_Paper"
+output: html_document
+date: "2014-16-01"
+---
+
+# 0 Global Setup 
+
+## 0.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r}
+GitClonePath <- "/Users/admin/Desktop/ElbeEstuarineZander"
+setwd(GitClonePath)
+```
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Input files from SL_Linux pipeline and addional Blasts
+path_Input_16S <-  paste(GitClonePath, "SL_Input_16S", sep="/")
+path_Input_RNA <- paste(GitClonePath, "SL_Input_RNA", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "SL_Output_16S", sep="/")
+path_Output_RNA     <- paste(GitClonePath, "SL_Output_RNA", sep="/")
+path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
+```
+
+## 0.2 Packages
+
+```{r}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::restore()
+```
+
+Most of the packages needed here are stored in the packrat::restore
+
+```{r,  message=FALSE,warning=FALSE, setup, include=FALSE}
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "AnnotationDbi", 
+#   "AnnotationHub", 
+#   "Biobase", 
+#   "GSEABase", 
+#   "DECIPHER", 
+#   "ComplexHeatmap", 
+#   "Biostrings", 
+#   "BiocParallel", 
+#   "BiocNeighbors", 
+#   "BiocFileCache", 
+#   "BiocBaseUtils", 
+#   "GO.db", 
+#   "GOSemSim", 
+#   "ShortRead", 
+#   "SummarizedExperiment", 
+#   "TreeSummarizedExperiment", 
+#   "phyloseq", 
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "DESeq2",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   "clusterProfiler", 
+#   "GenomeInfoDbData"
+#   ), force =T)
+
+#New in this Part: 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "sva",
+#   "fgsea",
+#   "org.Hs.eg.db"
+#   ), force=T)
+```
+
+## 0.3 Input Files
+
+```{r}
+Date <- "16.01.2024"
+Species <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Analysis <- "WGCNA"
+
+################
+#Bacteria Input#
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(  "SL_2021_Summer_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+pslistraw <- readRDS(file.path(path_Output_16S,paste(paste("SL_2021_Summer_ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+##################################################
+#AnnotationFile Created in Sections 1.1.3 - 1.1.5#
+SLUCGeneManual <- read.csv2(file.path(path_Input_RNA, "SLUCGene-Manual-17.06.2023.csv"))[-1]
+
+#############
+#Sample File#
+SAMDF<- read.table(file=file.path(path_Input_RNA, "SL_samplefile_04.01.2024.csv") ,sep=";",dec = ".")
+
+#####################
+#Count and TPM files#
+cnt_RNA_Gill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_countsNoRibo_08.01.24.rds"))
+cnt_RNA_Liver <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_countsNoRibo_08.01.24.rds"))
+tpm_RNA_Liver  <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_tpm_NoRibo_08.01.24.rds"))
+tpm_RNA_Gill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_tpm_NoRibo_08.01.24.rds"))
+tpms <- list("tpmGill "= tpm_RNA_Gill, "tpmLiver" = tpm_RNA_Liver)
+################################################
+#Assign the SL_RNA Output to Global Environment#
+save_name_RNA_Deseq2 <- "SL_2021_Summer" #from SL_RNA_16.01.24_Paper.Rmd
+
+DeseqLFC005 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name_RNA_Deseq2, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "0.05", sep=""), Date, sep="_"), ".rds", sep=""))))
+DeseqLFC1 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name_RNA_Deseq2, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "1", sep=""), Date, sep="_"), ".rds", sep=""))))
+
+```
+
+## 0.4 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the SL_Functions.rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("SL_Functions_16.01.24_Paper.Rmd")
+```
+
+## 0.5 Setup
+
+```{r,  message=FALSE,warning=FALSE}
+traitData<- c(
+    "FultonK", "Length","Weight", 
+    "StomachContent", 
+    "HSI",  "SSI",         
+    "O2","Salinity","SecchiDepth")
+
+
+#Sample Files
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+
+SAMDF_16S<-dplyr::filter(SAMDF, DNA16S == "yes") 
+rownames(SAMDF_16S) <- SAMDF_16S$SampleID
+
+# Get all IDs present
+SAMDF_RNA_Gill<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Gill) <- SAMDF_RNA_Gill$SampleID
+
+SAMDF_RNA_Liver<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Liver) <- SAMDF_RNA_Liver$SampleID
+
+SAMDF_RNA_Consensus<-dplyr::filter(SAMDF, RNAseq == "yes") 
+rownames(SAMDF_RNA_Consensus) <- SAMDF_RNA_Consensus$SampleID
+
+OutlineColor <- "grey20" #"white"
+```
+
+´
+## 0.6 Tutorials
+
+```{r,  message=FALSE,warning=FALSE, include=FALSE}
+#Strand et al., 2021
+#https://gitlab.com/M.Strand/Weighted_Host_Microbiome_Correlation_Network
+
+#MixOmics
+#http://mixomics.org/mixmc/mixmc-preprocessing/
+  
+#Microbiome
+#https://microbiome.github.io/tutorials/
+
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+
+#-
+
+# 1 Abiotics
+
+##- Figure 2C
+
+```{r,  message=FALSE,warning=FALSE}
+Abiotics<-c("O2","Salinity", "SecchiDepth", "Temperature", "pH") #, "Salinity", )
+AbioticsColors <- c("O2"  ="#3399FF",  "Salinity" = "#FFC333",  "SecchiDepth"= "#CC6633",  "Temperature" = "#FF0000",  "pH" ="#999333")
+require(ggrepel)
+
+  df <- na.omit(SAMDF[,c(Abiotics, "Loc", "Season")][SAMDF$Season == "Elbe_Summer_21",]%>% distinct(Loc, .keep_all = TRUE))
+  df$Ekm <- c("Ekm-713", "Ekm-692", "Ekm-665", "Ekm-633")
+  df$Locs <-c("MG", "BB", "SS", "ML")
+  df_long <- df %>% gather(Abiotics, Value, O2:pH)
+  df_long$fLoc <- as.numeric(factor(df_long$Loc, levels = unique(df_long$Loc)))
+
+    AbioticsLinePlot <- ggplot(df_long, aes(x = fLoc, y = Value, color = Abiotics, label = round(Value, 2))) +
+    geom_line() +
+    geom_point(size=3) +
+    geom_text_repel(aes(y = Value + 0.3), size = 4, show.legend = FALSE, fontface = "bold") +
+    labs(x = "", y = "Abiotics", color = "Abiotics") +
+    theme_minimal() + #atheme +
+    #theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_x_continuous(breaks = df_long$fLoc, labels = paste(df_long$Ekm))+  #df_long$Locs,
+    scale_color_manual(values = AbioticsColors, 
+                       breaks = names(AbioticsColors), 
+                       labels = noquote(paste(names(AbioticsColors), " [",  noquote(Units[names(AbioticsColors)]), "]", 
+                                 sep = ""))) + 
+    
+    theme(axis.title.x = element_blank(),
+        axis.title.x.bottom = element_text(size=10,face = "bold"),
+        axis.title.y.left = element_text(size=10,face = "bold"),
+        strip.text.x = element_text(face = "bold"),
+        strip.text.x.bottom = element_text(size = 10,face = "bold"),
+        strip.text.y.left = element_text(size = 10,face = "bold"),
+        axis.text.x.bottom = element_text(face = "bold", angle = 0, hjust = 0),
+        axis.text.y.left = element_text(size = 10, face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10,face = "bold"), 
+        axis.text.x = element_text(size=10, angle = 0),
+        plot.title = element_text(size = 10, face = "bold"),
+        plot.subtitle = element_text(size = 9),
+        plot.caption = element_text(size = 9))
+    plot(AbioticsLinePlot)
+    ggsave(AbioticsLinePlot, filename = paste(paste(Species, Year, Season, "Abiotics_Locs", sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 6.5,
+    height = 3.5)
+```
+
+
+# -
+
+
+# 2 SSU 
+
+### 2.1 SSU Setup 
+
+```{r,  message=FALSE,warning=FALSE}
+set.seed(123)
+Species    <- "SL"
+Tissue     <- "Gill"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "16S"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+
+save_name_16S <- paste(Species, Year, Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA), save_name_16S, "_.RData")
+
+Samples_SSU_Gill <- c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3", "SLSU21MGEB4", "SLSU21MGEB5",  "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6", "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7",  "SLSU21MLEB9")
+```
+
+
+## 2.2  Pre-filtering & Transormation
+
+Some comments on normalization: 
+- Normalization: 
+Strand et al., 2021
+4.2.1. Data preprocessing
+Transcript expression counts were summed for each gene.
+Expression values were normalized across samples using the
+Trimmed mean of M values (TMM)-method [33], and log2-
+transformed. Genes with expression levels below 1.0 in all samples
+and/or with a standard deviation less than 0.15 were removed
+before network inference. This reduced the number of genes from
+48,057 to 37,408.
+We retained OTUs that contribute at least 0.005% of the total
+microbial abundance. This reduced the number of OTUs from
+1152 to 296 and the number of zeros in the abundance table by
+50%. OTU abundances was normalized using the Cumulative Sum
+Scaling (CSS) method from the Bioconductor package metagenome-
+Seq, which by default log2-transforms the data.
+
+Swift et al. 2021: 
+Cumulative-Sum Score (CSS) uses robust statistics to provide an alternative to TSS that is less influenced by preferentially
+sampled taxa. Its normalization scaling factor is defined as the cumulative sum of the observed counts up to a
+threshold which is determined using a heuristic that minimizes the influence of the preferentially sampled taxa. The
+idea is that CSS scales each sample using only the part of the counts distribution that is relatively invariant (H. Lin &Peddada, 2020a; Weiss et al., 2017). However, the determination of the thresholds could fail due to high count variability (J. Chen et al., 2018). CSS or TSS do not account for sparsity or address compositionality.
+
+The DESeq scaling factor of the observed abundances for each sample is computed as the median of all the
+ratios between counts of the sample and the reference. Assuming most taxa are not differentially abundant, the median
+of these ratios would provide an estimate of a correction factor for all the read counts. Like most normalizations, TMM
+and DESeq rely on the strong assumptions that most taxa are not differentially abundant, and of those differentially
+abundant, there is an approximate balanced amount of over-abundance and under-abundance (Calza & Pawitan, 2010;
+Dillies et al., 2012; Gloor et al., 2017; Weiss et al., 2017). These may be reasonable assumptions for gene expression data
+but may not be valid for microbiome data which tends to be diverse. Also, while TMM and DESEq normalization are
+designed for compositional data, they do not address sparsity. In fact, large fractions of zeros and relatively low
+sequencing depths can be problematic for both methods and can lead to serious biases (Kumar et al., 2018). As stated
+previously, adding pseudo-counts to the original count data will not rectify the problem.
+
+Large scale tool benchmarking by Thorsen et al. has revealed
+that most of the commonly used differential (relative) abundance testing methods including edgeR and DESeq are
+sensitive to sparsity (Thorsen et al., 2016) and consequently exhibit unacceptably high false positive rates
+(Hawinkel et al., 2019). Also, recent investigations by H. Lin and Peddada (2020a, 2020b) indicate poor performance
+of these methods for microbiome data. However, based on simulations and analytical derivations, they attribute
+the poor performance to the violation of the assumption that most taxa do not change. As a result, the false
+discovery rate is inflated, and it increases as the sample size increases. Similar behavior of these methods was also
+seen by Weiss et al. (2017). Thus, H. Lin and Peddada (2020a) do not advocate the use of edgeR and DESeq for the
+analysis of microbiome data.
+
+following http://mixomics.org/mixmc/mixmc-preprocessing/
+Arumugam et al., (2011)
+
+```{r,  message=FALSE,warning=FALSE}
+library(phyloseq)
+library(tidyverse)
+
+psraw <-pslistraw$ps_SL_21
+ps <-pslist$ps_SL_21
+
+
+
+low.count.removal <- function(
+                        data, # OTU count df of size n (sample) x p (OTU)
+                        percent=0.005 # cutoff chosen
+                        ) {
+    keep.otu = which(colSums(data)*100/(sum(colSums(data))) > percent)
+    data.filter = data[,keep.otu]
+    return(list(data.filter = data.filter, keep.otu = keep.otu))}
+
+#######################################################
+#Plot consequence of filtering from Strand et al, 2021#
+#######################################################
+frac_zero <- c()
+all_sum   <- c()
+num_otu   <- c()
+seqp <- seq(0,0.1,0.0001)
+for(i in seqp){
+  result.filter = low.count.removal(otu_table(psraw), percent=i)
+  length(result.filter$keep.otu)
+  otu.f = result.filter$data.filter
+  frac_zero <- c(frac_zero, sum(otu.f == 00)/ (ncol(otu.f)*nrow(otu.f)))
+  all_sum <- c(all_sum, sum(otu.f))
+  num_otu <- c(num_otu, ncol(otu.f))
+}
+names(frac_zero) <- seqp
+names(all_sum) <- seqp
+
+applied_filter <- 0.005
+# Get all_sum and num_otu to a fraction of the total
+mas <- max(all_sum)
+mno <- max(num_otu)
+
+all_sum %>% (function(x){x/max(x)}) -> all_sum
+num_otu %>% (function(x){x/max(x)}) -> num_otu
+data.frame(filter = seqp, 
+           Percent.zeros   = frac_zero*100, 
+           Total.abundance = all_sum*100, 
+           Number.of.OTUs  = num_otu*100) %>% 
+  tidyr::gather(key = "Type", value = "percent.of.total", -filter) %>%
+  ggplot() + 
+  geom_line(mapping = aes(x = filter, y = percent.of.total, col = Type)) +
+  geom_vline(xintercept = applied_filter, alpha = 0.5, color = "red", linetype="dashed")+
+  ylab("Percent of total") +
+  xlab(paste("Filter at", applied_filter)) +
+  theme(legend.title = element_blank()) -> FilterZerosPlot
+
+FilterZerosPlot
+
+#The Filtering has been performed in the SL_16S.rmd
+# ps <-pslist$ps_SL_21
+# result.filter <- low.count.removal(otu_table(ps), percent=applied_filter) 
+# data.filter <- result.filter$data.filter
+# length(result.filter$keep.otu) # check how many OTUs remain
+#ps_SL_WGCNA <- prune_taxa(names(result.filter$keep.otu), ps)
+
+
+
+####################
+#CLR Transformation#
+####################
+ps_SL_WGCNA <- pslist$ps_SL_21
+tail(t(otu_table(ps_SL_WGCNA)))
+table(rowSums(t(otu_table(ps_SL_WGCNA))))
+
+ps_SL_WGCNA_clr <- microbiome::transform(ps_SL_WGCNA, "clr")
+head(t(otu_table(ps_SL_WGCNA_clr)))
+tail(t(otu_table(ps_SL_WGCNA_clr)))
+
+pslist$ps_WGCNA  <- ps_SL_WGCNA
+pslist$clr_WGCNA <- ps_SL_WGCNA_clr
+
+######
+#Plot#
+######
+for (i in names(pslist)[grepl("clr_WGCNA", names(pslist))]){
+  require(plyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(DESeq2)
+  #if (OperatingSystem == "Mac") {quartz() }
+  TSE <-mia::makeTreeSummarizedExperimentFromPhyloseq(pslist[[i]])
+  tryCatch({
+  g       <- paste(i); print(i)
+  SSUclrPCAPlot<-pcaplotRK3(TSE,intgroup = c("Replicates"), pcX = 1, pcY = 2, title="",ellipse = TRUE,     ellipse.prob = 0.5) + 
+  scale_fill_manual(values=col.Palette$SL) + #col.Palette.SeqCenter #col.Palette.Cruises
+  scale_color_manual(values=col.Palette$SL) + atheme +
+  theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+  theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+  prow <- cowplot::plot_grid(SSUclrPCAPlot, labels = c(""), ncol = 1)
+  title <- ggdraw() + draw_label_themeRKwhite(paste(g), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRKwhite(paste("species_glom clr-PCA", "with",       ... = 
+  length(rownames(TSE)),"bacterial species",sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0,   
+  vjust = 1)
+  SSUclrPCAPlot<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0, 0.05, 0.989))
+  ggsave(SSUclrPCAPlot, filename = paste(paste(save_name_16S, "SSU", "Filter-clrPCA" , sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 7,
+  height = 7)
+  SSUclrPCAPlot ->> SSUclrPCAPlot
+  plot(SSUclrPCAPlot)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+```
+
+
+## 2.3 WGCNA
+
+#### 2.3.1 Data Input 
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=10}
+#=====================================================================================
+#  Code chunk 3
+#=====================================================================================
+library(WGCNA)
+omics_data0 <- as.data.frame(otu_table(ps_SL_WGCNA_clr)) #%>% t()
+dim(omics_data0 %>% paste(c("Samples", "OTUs")))
+gsg = goodSamplesGenes(omics_data0, verbose = 3);
+gsg$allOK
+
+#=====================================================================================
+#  Code chunk 4
+#=====================================================================================
+if (!gsg$allOK)
+{
+  # Optionally, print the gene and sample names that were removed:
+  if (sum(!gsg$goodGenes)>0) 
+     printFlush(paste("Removing genes:", paste(names(omics_data0)[!gsg$goodGenes], collapse = ", ")));
+  if (sum(!gsg$goodSamples)>0) 
+     printFlush(paste("Removing samples:", paste(rownames(omics_data0)[!gsg$goodSamples], collapse = ", ")));
+  # Remove the offending genes and samples from the data:
+  omics_data0 = omics_data0[gsg$goodSamples, gsg$goodGenes]
+}
+
+#=====================================================================================
+#  Code chunk 5
+#=====================================================================================
+
+sampleTree = hclust(dist(omics_data0), method = "average");
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+#pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+par(cex = 0.6);
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2) 
+#=====================================================================================
+#  Code chunk 6
+#=====================================================================================
+
+# Plot a line to show the cut
+abline(h = 100, col = "red");
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 100, minSize = 10)
+table(clust)
+# clust 1 contains the samples we want to keep.
+
+#in Case we would exclude outliers from the tree: 
+ #keepSamples = (clust==1)
+ #omics_data = omics_data0[keepSamples, ]
+
+recordPlot() -> SampleClusteringTreePlot
+
+#Keep all samples
+omics_data <- omics_data0
+ nGenes = ncol(omics_data)
+ nSamples = nrow(omics_data)
+
+#=====================================================================================
+#  Code chunk 7
+#=====================================================================================
+
+datTraits<-SAMDF_16S[,traitData]
+datTraits <- datTraits[rownames(datTraits) %in% rownames(omics_data),]
+collectGarbage()
+
+#=====================================================================================
+#  Code chunk 8
+#=====================================================================================
+# Re-cluster samples
+sampleTree2 = hclust(dist(omics_data), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = FALSE)
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits), 
+                    main = "Sample dendrogram and trait heatmap")
+recordPlot() -> SampleClusteringTreeTraitsPlot
+#=====================================================================================
+#  Code chunk 9
+#=====================================================================================
+save(omics_data, datTraits, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "dataInput", Date, sep="_"), ".RData", sep=""))))
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(FilterZerosPlot , SSUclrPCAPlot, labels = c("A", "B"), ncol = 2, rel_heights = c(1,1)) -> part_1
+cowplot::plot_grid(part_1 , SampleClusteringTreeTraitsPlot, labels = c("", "C"), ncol = 1) -> part_2
+ggsave(part_2, filename = paste(paste(save_name_16S, "SSU_DataInputPlot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10,
+  height = 15)
+```
+
+#### 2.3.2 Network construction
+
+Rosales et al., 2023
+Network analysis
+To identify ASVs that co-associate in AH, DU, and DL samples, CLR-transformed counts were used for weighted correlation network analysis (WGCNA) with the WGCNA 1.70-3R package [76]. The network was constructed 
+unsigned with the following parameters: 
+power = 3, 
+minimum module size = 12, 
+deep split = 2, and 
+merged cut height = 0.25. The eigenvalues were correlated to AH, DU, and DL using Pearson correlation with the R function cor. The highest correlation in each disease state was then selected for network construction using the R package SpiecEasi 1.0.5 [77]. The network was then constructed as previously reported [11]. Briefly, the Stability Approach to Regularization Selection (StARS) [77] model was chosen along with the method Meinshausen–Bühlmann’s neighborhood selection [78]. For StARS, 100 subsamples were used with a variability threshold of 10−3. The centrality (node importance) was evaluated [79] using the functions centrality_degree (neighbors = the number of adjacent edges or neighbors) and centrality_edge_betweenness (centrality = the number of shortest paths going through an edge) [80]. The package influenceR 0.1.0. [81] selected important ASVs in each network and assigned the top “key players” [38], which were labeled with their respective orders.
+
+Jameson et al., 2023
+Co-occurrence patterns between taxa with putative roles in N2O production and the rest of the microbial community ASVs were explored using proportionality analysis within the propr package52. ASV tables were trimmed to select taxa that occurred ≥10 times in at least 10% of samples prior to network-level analyses to improve interpretability and minimize the risk of spurious correlations. Pairwise interactions between individual taxa with rho values greater than 0.60 were plotted using Cytoscape v3.9.0 and network topological indices were calculated using the NetworkAnalyzer tool114. Relationships between microbial community structure and rate processes were then assessed using weighted gene correlational network analysis (WGCNA) performed with the WGCNA package115. 
+The signed adjacency measure was first calculated for each pair of features (ASVs) by raising the absolute value of their pairwise correlation coefficients to a soft-thresholding power of 8 to maximize the scale-free topology fit. Hierarchical clustering of taxa into discrete subnetworks was completed using a 
+minimum module size threshold of 20 and a 
+dissimilarity threshold of 0.3. 
+Pearson correlation coefficients and corresponding p-values are reported for correlations between sample traits, subnetwork eigengenes, and individual ASVs (Supplementary Data 1). Subnetwork membership and intranetwork connectivity measures are also reported for each ASV and were used in further analyses to assess broad relationships between ASV connectivity and importance with respect to N2O production rates.
+
+Mach et al., 2021
+To confirm the results of the DE analysis, the weighted gene co-expression network analysis (WGCNA) method was also run on the “E1” matrix using the WGCNA R package (version 1.69) (Langfelder and Horvath, 2008). The parameters for the analysis were set as follows: 
+“corFnc” = bicor, 
+“type” = signed hybrid, 
+“beta” = 10, 
+“deepSplit” = 4, 
+“minClusterSize” = 30, 
+“cutHeight” = 0.1.
+The eigengenes corresponding to each identified module were correlated individually to all the 1H NMR and biochemical assay metabolites, i.e., a set of 56 different molecules (see next paragraphs). A module was then considered positively or negatively associated to this set of molecules if the Pearson r correlation values were ≥ |0.65| for at least 5 molecules and if all the corresponding p-values were ≤ 1e−05. The positively and the negatively correlated modules defined in this way were merged to obtain a single gene list, which was subsequently compared to the differentially expressed genes (DEGs) list using a Venn diagram.
+
+Strand et al, 2021
+4.2.2. Network inference
+For network inference, we used the Weighted Gene Co-expression Network Analysis (WGCNA) R package [24] and the function 
+blockwiseModules with the bicor correlation measure and parameters 
+maxBlockSize = 10000, 
+networkType = “signed”, 
+TOMType = “signed”, 
+corType = “bicor”, 
+maxPOutliers = 0.05, 
+replaceMissingAdjacencies = TRUE, 
+pamStage = F, 
+deepSplit = 4, 
+minModuleSize = 2, 
+minKMEtoStay = 0.5, 
+minCoreKME = 0.5, 
+minCoreKMESize = 2, 
+reassignThreshold = 0 
+mergeCutHeight = 0.4/0.5 (for microbiota/host respectively).
+
+Our analysis relies heavily on network modules, and hence the parameters related to module detection and trimming influence the results. Briefly, deepSplit controls the sensitivity of the module detection approach by hierarchical clustering, with a value of 1 being the least sensitive and 4 being the most sensitive. minModuleSize controls the minimum size of modules in the clustering step. Nodes with a correlation to the module eigennode (KME) lower than minKMEtoStay are trimmed from the module, and the module is deleted if it does not have a core of at least minCoreKMESize nodes (with core nodes being defined as having a KME greater than minCoreKME). Finally, different modules with eigennodes that correlate above the 1 – mergeCutHeight threshold are merged. Note that the final modules can be smaller than minModuleSize due to trimming (but not smaller than minCoreKMESize), and that they can include nodes with a KME lower than minKMEtoStay due to module merging. Our parameters were set to detect highly correlated and potentially small modules initially, thus not missing interesting profiles displayed by few genes/OTUs, and then to apply an aggressive merging threshold to avoid dealing with highly redundant modules in downstream analysis.
+
+##### 2.3.2.1 Pick Soft Threshold
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=10}
+#=====================================================================================
+#  Code chunk 1
+#=====================================================================================
+# Load the WGCNA package
+library(WGCNA)
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+# Allow multi-threading within WGCNA. At present this call is necessary.
+# Any error here may be ignored but you may want to update WGCNA if you see one.
+# Caution: skip this line if you run RStudio or other third-party R environments.
+# See note above.
+#enableWGCNAThreads()
+# Load the data saved in the first part
+lnames = load(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "dataInput", Date, sep="_"), ".RData", sep=""))))
+#The variable lnames contains the names of loaded variables.
+lnames
+#=====================================================================================
+#  Code chunk 2
+#=====================================================================================
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+allowWGCNAThreads() #needed otherwise would not work! https://www.biostars.org/p/122349/
+sft = pickSoftThreshold(omics_data, powerVector = powers, verbose = 5)
+# Plot the results:
+# Find the soft thresholding power beta to which co-expression similarity is raised to calculate adjacency.
+# based on the criterion of approximate scale-free topology.
+idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.90))
+if(is.infinite(idx)){
+  idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.80))
+  if(!is.infinite(idx)){
+    st <- sft$fitIndices[idx,1]
+  } else{
+    idx <- which.max(-sign(sft$fitIndices[,3])*sft$fitIndices[,2])
+    st <- sft$fitIndices[idx,1]
+  }
+} else{st <- sft$fitIndices[idx,1]}
+# Plot Scale independence measure and Mean connectivity measure
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+data.frame(Indices = sft$fitIndices[,1],
+           sfApprox = -sign(sft$fitIndices[,3])*sft$fitIndices[,2]) %>% 
+  ggplot() + 
+  geom_hline(yintercept = 0.9, color = "red", alpha = 0.6) + # corresponds to R^2 cut-off of 0.9
+  geom_hline(yintercept = 0.8, color = "red", alpha = 0.2) + # corresponds to R^2 cut-off of 0.8
+  geom_line(aes(x = Indices, y = sfApprox), color = "red", alpha = 0.1, size = 2.5) +
+  geom_text(mapping = aes(x = Indices, y = sfApprox, label = Indices), color = "red", size = 4) +
+  ggtitle("Scale independence") +
+  xlab("Soft Threshold (power)") +
+  ylab("SF Model Fit,signed R^2") +
+  xlim(1,20) +
+  ylim(-1,1) +
+  geom_segment(aes(x = st, y = 0.25, xend = st, yend = sfApprox[idx]-0.05), 
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.5)-> scale_independence_plot 
+  
+# Mean connectivity as a function of the soft-thresholding power
+
+data.frame(Indices = sft$fitIndices[,1],
+           meanApprox = sft$fitIndices[,5]) %>% 
+  ggplot() + 
+  geom_line(aes(x = Indices, y = meanApprox), color = "red", alpha = 0.1, size = 2.5) +
+  geom_text(mapping = aes(x = Indices, y = meanApprox, label = Indices), color = "red", size = 4) +
+  xlab("Soft Threshold (power)") +
+  ylab("Mean Connectivity") +
+  geom_segment(aes(x = st-0.4, 
+                   y = sft$fitIndices$mean.k.[idx], 
+                   xend = 0, 
+                   yend = sft$fitIndices$mean.k.[idx]),
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.4) +
+  ggtitle(paste0("Mean connectivity: ", 
+                 round(sft$fitIndices$mean.k.[idx],2))) -> mean_connectivity_plot
+
+cowplot::plot_grid(scale_independence_plot, mean_connectivity_plot, ncol = 2, align = "h", labels = c("A", "B")) -> si_mc_plot
+
+
+ggsave(si_mc_plot, filename = paste(paste(save_name_16S, "soft_thresholding_power" , sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+si_mc_plot
+
+softPower = st; print(paste("SoftPower chosen to", softPower))
+
+softPower <- 6
+```
+
+##### 2.3.2.2 blockwiseModules
+
+deepSplit integer value between 0 and 4. Provides a simplified control over how sensitive
+module detection should be to module splitting, with 0 least and 4 most sensitive.
+See cutreeDynamic for more details.
+
+```{r,  message=FALSE,warning=FALSE}
+##################
+#blockwiseModules#
+##################
+softPower = st; print(paste("SoftPower chosen to", softPower))
+
+network = blockwiseModules(omics_data, 
+                       power = st,
+                       networkType = "signed", 
+                       TOMType = "signed",
+                       corType = "bicor",
+                       minModuleSize = 5, #for genes 30
+                       reassignThreshold = 0, 
+                       deepSplit = 3,
+                       mergeCutHeight = 0.25,
+                       numericLabels = TRUE, 
+                       pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"), 
+                       verbose = 3)
+
+#Strand et., 2021
+# network <- blockwiseModules(omics_data,
+#                           power = st, 
+#                           networkType = "signed", 
+#                           TOMType = "signed",
+#                           corType = "bicor",
+#                           maxPOutliers = 0.05,
+#                           deepSplit = 4, # Default 2
+#                           minModuleSize = 2, # 30
+#                           minCoreKME = 0.5,      # Default 0.5
+#                           minCoreKMESize = 2,    # Default minModuleSize/3,
+#                           minKMEtoStay = 0.5,    # Default 0.3
+#                           reassignThreshold = 0, # Default 1e-6
+#                           mergeCutHeight = 0.4,  # Default 0.15
+#                           pamStage = FALSE, 
+#                           pamRespectsDendro = TRUE,
+#                           replaceMissingAdjacencies = TRUE,
+#                           numericLabels = TRUE,
+#                           saveTOMs = TRUE,
+#                           saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"),
+#                           verbose = 3)
+
+###########
+#Save Data#
+moduleLabels = network$colors
+moduleColors = labels2colors(network$colors)
+MEs = network$MEs
+geneTree = network$dendrograms[[1]]
+
+save(MEs, moduleLabels, moduleColors, geneTree,
+     file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "networkConstruction-auto", Date, sep="_"), ".RData", sep=""))))
+
+SSU_Gill_WGCNA <- list("SSU_Gill_omics_data" = omics_data, 
+              "SSU_Gill_datTraits"=datTraits,
+              "SSU_Gill_MEs"=MEs,
+              "SSU_Gill_moduleLabels"=moduleLabels,
+              "SSU_Gill_moduleColors"=moduleColors,
+              "SSU_Gill_geneTree"=geneTree)
+
+saveRDS(SSU_Gill_WGCNA, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "SSU_List", Date, sep="_"), ".rds", sep=""))))
+```
+
+##### 2.3.2.3 Module & Network Visualization
+
+```{r,  message=FALSE,warning=FALSE, fig.width=15, fig.height=15}
+#####################
+#plotDendroAndColors#
+#####################
+
+##############################
+#Number of ASV in each module#
+##############################
+as.data.frame(table(SSU_Gill_WGCNA$SSU_Gill_moduleLabels)) %>% 
+  dplyr::rename(Module = Var1, Size = Freq) %>%
+  dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+module_size %>% 
+  ggplot(aes(x = Module, y = Size, fill = Module)) +
+  geom_col(color =  "#000000") +
+  ggtitle("Number of genes in each module") +
+  theme(legend.position = "none") + 
+  scale_fill_manual(values = setNames(module_size$Module_color,module_size$Module)) +
+  geom_text(aes(label = Size),vjust = 0.5, hjust = -0.18, size = 3.5) +
+  ylim(0, max(module_size$Size)*1.1) +
+  theme(plot.margin = margin(2, 2, 2, 2, "pt")) +
+  coord_flip() -> ASVModuleSizePlot
+ASVModuleSizePlot
+ggsave(ASVModuleSizePlot, filename = paste(paste(save_name_16S, "ASVModulePlot" , sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+#######################################
+#Module-Eigenegene-Correlation-Heatmap#
+#######################################
+MEs_R <- bicor(MEs, MEs, maxPOutliers = 0.05)
+idx.r <- which(rownames(MEs_R) == "ME0")
+idx.c <- which(colnames(MEs_R) == "ME0")
+MEs_R_noME0 <- MEs_R[-idx.r, -idx.c]
+
+MEs_R_noME0[upper.tri(MEs_R_noME0)] %>% 
+  as.data.frame() %>% 
+  dplyr::rename("correlation" = ".") %>% 
+  ggplot(aes(x=correlation)) + 
+  geom_histogram(bins = 20) +
+  #geom_density() + 
+  xlim(-1, 1) +
+  ggtitle(paste0(prefix,"ME correlation\n w/o ",prefix ,"ME0")) -> MEs_R_density
+#MEs_R_density
+
+MEs_R_density
+#MEs_R_density
+
+pheatmap::pheatmap(MEs_R_noME0, color = colorRampPalette(c("Blue", "White", "Red"))(100),
+                   silent = T, 
+                   breaks = seq(-1,1,length.out = 101),
+                   treeheight_row = 5, 
+                   treeheight_col = 5,
+                   main = paste0(prefix,"ME correlation heatmap w/o ",prefix ,"ME0"),
+                   labels_row = paste0(prefix, rownames(MEs_R)),
+                   labels_col = paste0(prefix, colnames(MEs_R))) -> MEs_R_Corr
+
+ggsave(MEs_R_Corr, filename = paste(paste(save_name_16S, "MEs_R_Corr" , sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+
+cowplot::plot_grid(MEs_R_density, MEs_R_Corr$gtable, labels = c("D", "E"), rel_widths = c(0.6, 1)) -> density_eigen
+density_eigen
+
+
+#######################
+#Network-Visualization#
+#######################
+# 5 Visualization of networks within R
+# 5.a Visualizing the gene network
+# One way to visualize a weighted network is to plot its heatmap, Fig. 1. Each row and column of the heatmap
+# correspond to a single gene. The heatmap can depict adjacencies or topological overlaps, with light colors denoting
+# low adjacency (overlap) and darker colors higher adjacency (overlap). In addition, the gene dendrograms and module
+# colors are plotted along the top and left side of the heatmap. The package provides a convenient function to create
+# such network plots; Fig. 1 was created using the following code. This code can be executed only if the network
+# was calculated using a single-block approach (that is, using the 1-step automatic or the step-by-step tutorials). If
+# the networks were calculated using the block-wise approach, the user will need to modify this code to perform the
+# visualization in each block separately. The modi cation is simple and we leave it as an exercise for the interested
+# reader.
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+
+# dissTOM = 1-TOMsimilarityFromExpr(omics_data, power = softPower);
+# # Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+# plotTOM = dissTOM^10;
+# # Set diagonal to NA for a nicer plot
+# diag(plotTOM) = NA;
+# # Call the plot function
+# TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+
+#############################
+# Correlation within modules# from Strand et al, 2021
+#############################
+corr_within_module <- function(omics_data, network, module_x = 1){
+  idx.omics_data <- which(network$colors == module_x)
+  idx.me <- which(colnames(network$MEs) == paste0("ME",module_x))
+  kME_x <- bicor(omics_data[,idx.omics_data], network$MEs[,idx.me], maxPOutliers = 0.05)
+  kME_x}
+ggplot.list <- list()
+for(m in colnames(network$MEs)){
+  h <- as.numeric(sub("ME","", m))
+  data.frame(x = suppressWarnings(corr_within_module(omics_data = omics_data, network = network, module_x = h))) %>% 
+    ggplot() + 
+    geom_histogram(aes(x), fill = labels2colors(h), color = "black", alpha = 0.5, bins = 20) + 
+    xlim(-1, 1) +
+    xlab("ASV correlation")+
+    ggtitle(paste0(prefix,m)) -> da_plot
+  ggplot.list[[m]] <- da_plot}
+ggplot.list <- ggplot.list[ggplot.list %>% names() %>% sub("ME", "", .) %>% as.numeric() %>% order()]
+
+cowplot::plot_grid(plotlist = ggplot.list, ncol = 3) -> density_all_plot
+density_all_plot
+
+ggsave(density_all_plot, filename = paste(paste(save_name_16S, "WithinModuleCorrelation" , sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 12)
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(si_mc_plot, ASVModuleSizePlot, labels = c("","C"), ncol = 2) -> part_1
+cowplot::plot_grid(part_1, density_eigen, labels = c("", ""), ncol = 1, rel_widths = c(1,0.5)) -> part_2
+cowplot::plot_grid(part_2, density_all_plot, labels = c("", "F"), rel_widths = c(1,0.1), ncol = 1) -> part_3
+ggsave(part_3, filename = paste(paste(save_name_16S, "SSU_Network", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12,
+  height = 10)
+```
+
+### 2.4 Module-Trait-Correlation Heatmap
+
+```{r,  message=FALSE,warning=FALSE}
+###################
+#Self made Heatmap#
+###################
+#https://bioinformaticsworkbook.org/tutorials/wgcna.html#gsc.tab=0
+# Define numbers of genes and samples
+MEs = orderMEs(SSU_Gill_WGCNA$SSU_Gill_MEs)
+names(MEs) = names(MEs) %>% gsub("ME","", .)  %>% paste("SSU",., sep="")
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+textMatrix <- paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) <- dim(moduleTraitCor)
+
+# Add treatment names
+MEs$treatment = row.names(MEs)
+mat <- as.data.frame(t(moduleTraitCor))
+mat$traits <- rownames(mat)
+# tidy & plot data
+module_order = names(MEs) 
+
+mME = mat %>%
+  pivot_longer(-traits) %>%
+  mutate(#name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+
+textMatrixLong <-  as.data.frame(t(signif(moduleTraitCor, 2)))
+textMatrixLong$traits <- rownames(textMatrixLong)
+textMatrixLong = textMatrixLong %>%
+  pivot_longer(-traits) %>%
+  mutate(
+    #name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong <- as.data.frame(textMatrixLong)
+
+textMatrixLong2 <-  as.data.frame(t(signif(moduleTraitPvalue, 1)))
+textMatrixLong2$traits <- rownames(textMatrixLong2)
+textMatrixLong2 = textMatrixLong2%>%
+  pivot_longer(-traits) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong2 <- as.data.frame(textMatrixLong2)
+
+## add gene counts per module
+ genesmod<- as.data.frame(moduleLabels)
+ genesmod$genes <- rownames(genesmod)
+ genesmod$Modules <- paste("SSU",genesmod$moduleLabels, sep="") #labels2colors(genesmod$moduleLabels)
+ 
+ModCount <- as.data.frame(genesmod %>% 
+  dplyr::group_by(Modules) %>% 
+  dplyr::summarise(n = n()) )
+ModCount <- ModCount[order(as.numeric(ModCount$n), decreasing = T),]
+
+
+HM <- mME %>% ggplot(., aes(x=traits, y=name, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "steelblue1",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+ggsave(A, filename = paste(paste(save_name_16S, "ModuleHeatmap", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+
+ 
+mME<- mME%>% mutate(Category = case_when((traits %in% c(
+"O2",         
+"Salinity",    
+"SecchiDepth"
+)) ~ "Abiotics", 
+(traits %in% c(
+"FultonK", 
+"Length",
+"Weight",
+"StomachContent",
+"HSI",              
+"SSI")) ~ "Physiology")); Order<- c("Abiotics", "Physiology")
+
+
+ 
+HM <- mME %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+  geom_tile() +
+    scale_fill_gradientn(
+      colours = c("steelblue1", "white", "red"),
+      limit = c(-1,1), 
+      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+  
+  scale_x_discrete(limits=ModCount$Modules, labels=paste(ModCount$Modules, ": ", ModCount$n)) +
+  facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ WGCNA_ModuleHeatmap <- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(WGCNA_ModuleHeatmap)
+ggsave(WGCNA_ModuleHeatmap, filename = paste(paste(save_name_16S, "ModuleHeatmap-2", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 7, height = 6) 
+      
+  
+cowplot::plot_grid(WGCNA_ModuleHeatmap, AbioticsLinePlot, labels = c("A", "B"), rel_widths = c(1,0.5), ncol = 2) -> part_4
+ggsave(part_4, filename = paste(paste(save_name_16S, "SSU_HmapAbiotics", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 7)
+
+##################
+#Specific Modules#
+##################
+ #  Module <- "darkturquoise"
+ #  HM <- mME[mME$name == Module,] %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+ #  geom_tile() +
+ #    scale_fill_gradientn(
+ #      colours = c("steelblue1", "white", "red"),
+ #      limit = c(-1,1), 
+ #      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+ #  # scale_fill_gradient2(
+ #  #   low = "steelblue1",
+ #  #   high = "red",
+ #  #   mid = "white",
+ #  #   midpoint = 0,
+ #  #   limit = c(-1,1)) 
+ #  #facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+ #  theme(axis.text.x = element_text(angle=90)) +
+ #  labs(title = "", y = "Modules", fill="corr") +
+ #  geom_text(aes(label=textMatrixLong[textMatrixLong$name == Module,]$value), position=position_nudge(y=0.2), 
+ #                      size=3, colour="grey20") +
+ #  geom_text(aes(label=paste0("(",textMatrixLong2[textMatrixLong2$name == Module,]$value,")")), position=position_nudge(y=-0.2), 
+ #                      colour="grey20", size=3) +
+ #   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+ #      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+ #      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ # A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+ #      plot(A)
+ #      ggsave(A, filename = paste("WGCNA-ModuleHeatmap", Module, sep="_"), path = pathPlots, 
+ #             device='png', dpi=300, width = 2.8,height = 7)
+
+```
+
+### 2.6 Dataframe Module-ASVs
+
+```{r,  Dataframe creation, message=FALSE,warning=FALSE}
+#############################################
+#Create Bacterial Counts and Reseq Dataframe#
+#############################################  
+
+TAX <- as.data.frame(tax_table(pslist$ps_SL_21))
+OTU <- as.data.frame(t(otu_table(pslist$ps_SL_21)))
+OTU$ASV <- rownames(OTU)
+REFSEQ <- refseq(pslist$ps_SL_21)
+REFSEQ <- stack(as.character(REFSEQ, use.names=TRUE))
+colnames(REFSEQ)[colnames(REFSEQ) == "ind"] <- "ASV"
+SSUData <- TAX %>% rownames_to_column("RowName") %>%
+          left_join(OTU %>% rownames_to_column("RowName"), by = "RowName") %>%
+          column_to_rownames("RowName")
+SSUData  <- left_join(SSUData , REFSEQ)
+rownames(SSUData) <- SSUData$ASV
+#Count species per Sample
+#ddply(SSUData ,.(ASV),numcolwise(sum))
+
+############################################################################
+#Create WGCNA Dataframe: Species, ModuleMembership, Correlation to Abiotics#
+############################################################################
+head(SSU_Gill_WGCNA$SSU_Gill_MEs)
+head(SSU_Gill_WGCNA$SSU_Gill_moduleLabels)
+MEs          <- SSU_Gill_WGCNA$SSU_Gill_MEs
+omics_data   <- SSU_Gill_WGCNA$SSU_Gill_omics_data
+datTraits    <- SSU_Gill_WGCNA$SSU_Gill_datTraits
+moduleLabels <- SSU_Gill_WGCNA$SSU_Gill_moduleLabels
+modNames     <- names(MEs)
+nSamples     <- nrow(omics_data)
+
+TraitOfInterest <- "O2"
+DatTraitOfInterest <- as.data.frame(datTraits[TraitOfInterest])
+
+SSUWGCNAlist <- list()
+for (i in names(MEs)) {
+
+  a <- length(SSUWGCNAlist)
+  ModuleOfInterst <- paste(sub("ME", "", i))
+  
+  geneModuleMembership = as.data.frame(cor(omics_data, MEs, use = "p"));
+  MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+  names(geneModuleMembership) = paste("MM", modNames, sep="");
+  names(MMPvalue) = paste("p.MM", modNames, sep="");
+
+  geneTraitSignificance = as.data.frame(cor(omics_data, DatTraitOfInterest, use = "p"));
+  GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+  names(geneTraitSignificance) = paste("GS.", names(DatTraitOfInterest), sep="");
+  names(GSPvalue) = paste("p.GS.", names(DatTraitOfInterest), sep="");
+
+  
+  OmicsPerModule <- as.data.frame(names(moduleLabels[moduleLabels == ModuleOfInterst]))
+  names(OmicsPerModule) <- paste("ME", ModuleOfInterst, sep="")
+  rownames(OmicsPerModule) <- OmicsPerModule[,1]
+ 
+  SSUWGCNAdata <- OmicsPerModule %>% rownames_to_column("RowName") %>%
+          left_join(geneModuleMembership[rownames(OmicsPerModule),, drop = FALSE][names(geneModuleMembership) %in%
+          paste("MMME", ModuleOfInterst, sep="")] %>% rownames_to_column("RowName"), by = "RowName") %>%
+          column_to_rownames("RowName")
+  SSUWGCNAdata  <- SSUWGCNAdata  %>% rownames_to_column("RowName") %>%
+          left_join(geneTraitSignificance[rownames(OmicsPerModule),, drop = FALSE][names(geneTraitSignificance) %in%
+          paste("GS.", TraitOfInterest, sep="")] %>% rownames_to_column("RowName"), by = "RowName") %>%
+          column_to_rownames("RowName")
+
+  SSUWGCNAdata  <- SSUWGCNAdata  %>% rownames_to_column("RowName") %>%
+          left_join(SSUData[rownames(SSUData) %in% rownames(SSUWGCNAdata),] %>% rownames_to_column("RowName"), 
+          by = "RowName") %>% column_to_rownames("RowName")
+  
+  #Reoder by kME/Module Membership
+  SSUWGCNAdata <- SSUWGCNAdata %>%
+            dplyr::arrange(desc(SSUWGCNAdata[paste("MMME", ModuleOfInterst, sep="")]))
+
+  SSUWGCNAlist[[a+1]] <- SSUWGCNAdata
+  
+  names(SSUWGCNAlist)[[a+1]] <- paste("SSU",ModuleOfInterst, sep="")
+  
+  write.csv2(SSUWGCNAdata, paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, 
+            paste("SSU",ModuleOfInterst, sep=""), Date, sep="_"),".csv", sep=""))))
+  
+}
+
+SSUWGCNAlist$All <- SSUData
+
+saveRDS(SSUWGCNAlist, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "SSU_List_2", Date, sep="_"), ".rds", sep=""))))
+
+#Export ASVs as Fasta 
+# pslist$ps_SL %>%
+#       refseq() %>%
+#       Biostrings::writeXStringSet(paste0(file.path(path_Output_WGCNA, "SSUWGCNAlist_SL_21.08.23.asv.fna")), append=FALSE,
+#                                   compress=FALSE, compression_level=NA, format="fasta")
+# fasta_sequences <- Biostrings::readDNAStringSet(paste0(file.path(path_Output_WGCNA, "SSUWGCNAlist_SL_21.08.23.asv.fna")))
+# target_names    <- SSUWGCNAlist$SSU8$ASV
+# # Subset the sequences based on the target names
+# subset_sequences <- fasta_sequences[names(fasta_sequences) %in% target_names]
+# Biostrings::writeXStringSet(subset_sequences, paste0(file.path(path_Output_WGCNA, "SSUWGCNAlist_SL_21.08.23_SSU8.asv.fna")))
+
+#######################################
+#Extract and Inspect Sequences on NCBI#
+#######################################  
+  # minTotRelAbun = 0.001
+  # x = taxa_sums(pslist$ps_Mock)
+  # keepTaxa = which((x / sum(x)) > minTotRelAbun)
+  # prunedSet = prune_taxa(as.character(keepTaxa), pslist$ps_Mock)
+  # 
+  # prunedSet %>%
+  #     refseq() %>%
+  #     Biostrings::writeXStringSet("~/asv.fna", append=FALSE,
+  #                                 compress=FALSE, compression_level=NA, format="fasta")
+
+```
+
+
+### 2.7 Taxa Cluster-Heatmap
+
+```{r,  message=FALSE,warning=FALSE, fig.width=10, fig.height=10}
+SSU_Gill_WGCNA <-readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_16S, "SSU_List", Date, sep="_"), ".rds", sep=""))))
+
+SSU_Gill_WGCNA_list <- list("SSU_Gill_WGCNA" = SSU_Gill_WGCNA)
+
+#################################
+#Cluster-Heatmap of Module Genes# in a loop for correlation higher 3
+#################################
+ExpressionSet <- as.data.frame(SSU_Gill_WGCNA$SSU_Gill_omics_data)
+moduleLabels  <- SSU_Gill_WGCNA$SSU_Gill_moduleLabels
+InterestingComparison <- as.data.frame(names(SSU_Gill_WGCNA$SSU_Gill_MEs))
+
+for (i in names(SSU_Gill_WGCNA_list)[grepl("SSU_Gill_WGCNA", names(SSU_Gill_WGCNA_list))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({
+    
+    g           <- paste(i)
+    gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i); print(gg)
+
+    for (MODULE in unique(as.character(InterestingComparison$name))) {
+      tryCatch({
+        
+      genes_of_interest <- names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))])
+      print(MODULE)
+      #print(head(names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))])))  
+      
+      FILENAME    <- paste(paste(save_name_16S, "Heatplot", sub("ME", "SSU", MODULE), sep="_"),".png", sep="")
+      FILENAME2   <- paste(paste(save_name_16S, "Heatplot", sub("ME", "SSU", MODULE), "NoClust",sep="_"),".png", sep="")
+      
+      TITLE       <- draw_label_themeRKwhite(paste(Species, gg, Type, MODULE),
+                                    element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+      #For any unknown reason gene names like trnat-ugu_39 get changes by WGCNA to trnat.ugu_39
+
+      rowclusternum  <- 1
+      columnclusternum    <- 1
+
+
+      require(DESeq2)
+      require(tidyverse)
+      require(ggplot2)
+
+    BacteriaHeatPlotRKnoClust_SL(res = res, clr = ExpressionSet, Species = Species, min_count = 10,
+                                        genes_of_interest = genes_of_interest, Samples = Samples_SSU_Gill, 
+                                        SAMDF = SAMDF_16S,  TITLE = TITLE, filename= FILENAME, OutlineColor = "grey20")
+
+    if (MODULE == "ME2") {
+      plot(A)
+    } else {
+    print("Plots are saved to the pathPlots")
+    }
+    
+    
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+#- 
+
+## 2.8 SSU Function Description
+
+Here I did a Picrust2 analysis but it was not very informative, I guess there are just to many unknown species in Fish gills
+
+### 2.8.1 Pathogenes from Literature
+
+```{r,  message=FALSE,warning=FALSE}
+#Austin, B., Austin, D. A., & Munn, C. B. (2007). Bacterial fish pathogens: disease of farmed and wild fish (Vol. 26, p. 552). Chichester: Springer.
+PathogeneSpecies <-
+  c("Clostridium botulinum",
+"Eubacterium tarantellae",
+"Carnobacterium maltaromaticum",
+"Enterococcus faecalis",
+"Vagococcus salmoninarum", 
+"Lactobacillus" ,
+"Lactococcus garvieae", 
+"Enterococcus seriolicida",
+"Lactococcus piscium", 
+"Streptococcus dysgalactiae", 
+"Streptococcus agalactiae", 
+"Streptococcus ictaluri",
+"Streptococcus parauberis", 
+"Streptococcus phocae",
+"Renibacterium salmoninarum",
+"Erysipelothrix rhusiopathiae", 
+"Bacillus",
+"Bacillus cereus",
+"Bacillus mycoides",
+"Corynebacterium aquaticum", 
+"Weissella", 
+"Weissella ceti", 
+"Micrococcus", 
+"Mycobacterium", 
+"Mycobacterium abscessus",
+"Mycobacterium anabanti",
+"Mycobacterium avium",
+"Mycobacterium chelonei", 
+"Mycobacterium fortuitum",
+"Mycobacterium gordonae",
+"Mycobacterium marinum",
+"Mycobacterium montefiorense",
+"Mycobacterium neoaurum",
+"Mycobacterium piscium",
+"Mycobacterium platypoecilus",
+"Mycobacterium poriferae",
+"Mycobacterium pseudoshottsii",
+"Mycobacterium ranae",
+"Mycobacterium salmoniphilum",
+"Mycobacterium shottsii",
+"Mycobacterium scrofulaceum",
+"Mycobacterium simiae",
+"Mycobacterium smegmatis",
+"Mycobacterium ulcerans",
+"Nocardia asteroides",
+"Nocardia salmonicida",
+"Nocardia seriolae",
+"Rhodococcus",
+"Rhodococcus erythropolis",
+"Rhodococcus qingshengii",
+"Planococcus", 
+"Staphylococcus epidermidis", 
+"Staphylococcus warneri", 
+"Aeromonas allosaccharophila",
+"Aeromonas bestiarum",
+"Aeromonas caviae", 
+"Aeromonas dhakensis", 
+"Aeromonas hydrophila",
+"Aeromonas liquefaciens",
+"Aeromonas punctata",
+"Aeromonas jandaei",
+"Aeromonas piscicola", 
+"Aeromonas salmonicida", 
+"Aeromonas sobria", 
+"Aeromonas schubertii", 
+"Aeromonas veronii", 
+"Pseudoalteromonas piscicida", 
+"Pseudoalteromonas undina", 
+"Shewanella putrefaciens", 
+"Arcobacter cryaerophilus", 
+"Delftia acidovorans", 
+"Citrobacter freundii", 
+"Edwardsiella anguillarum", 
+"Edwardsiella ictaluri", 
+"Edwarsiella piscicida", 
+"Edwardsiella tarda", 
+"Enterobacter cloacae", 
+"Plesiomonas shigelloides", 
+"Pantoea",
+"Enterobacter agglomerans", 
+"Providencia rettgeri",
+"Proteus rettgeri",
+"Providencia vermicola", 
+"Salmonella enterica", 
+"Serratia liquefaciens", 
+"Serratia plymuthica", 
+"Yersinia ruckeri", 
+"Chryseobacterium aahli",
+"Chryseobacterium balustinum", 
+"Flavobacterium balustinum",
+"Chryseobacterium indologenes", 
+"Chryseobacterium scophthalmum",
+"Chryseobacterium piscicola",
+"Flavobacterium scophthalmum",
+"Flavobacterium branchiophilum", 
+"Flavobacterium columnare", 
+"Flexibacter columnaris",
+"Cytophaga columnaris" ,
+"Flavobacterium hydatis",
+"Cytophaga aquatilis",
+"Flavobacterium johnsoniae" ,
+"Cytophaga johnsonae",
+"Flavobacterium oncorhynchi" ,
+"Flavobacterium psychrophilum",
+"Cytophaga psychrophile",
+"Flavobacterium spartensis" ,
+"Flavobacterium succinicans" ,
+"Flectobacillus roseus" ,
+"Tenacibaculum dicentrarchi", 
+"Tenacibaculum discolor" ,
+"Tenacibaculum gallaicum", 
+"Tenacibaculum maritimum",
+"Flexibacter maritimus",
+"Tenacibaculum ovolyticum" ,
+"Flexibacter ovolyticus",
+"Tenacibaculum soleae" ,
+"Francisella noatunensis" ,
+"Francisella philomiragia",
+"Francisella piscicida",
+"Hahella chejuensis" ,
+"Halomonas cupida",
+"Deleya cupida" ,
+"Acinetobacter johnsonii" ,
+"Acinetobacter iwoffi" ,
+"Moritella marina" ,
+"Moritella viscosa" ,
+"Mycoplasma" ,
+"Myxococcus piscicola" ,
+"Aquaspirillum",
+"Janthinobacterium lividum ",
+"Pasteurella skyensis" ,
+"Piscirickettsia salmonis ",
+"Pseudomonas aeruginosa ",
+"Pseudomonas alcaligenes" ,
+"Pseudomonas baetica" ,
+"Pseudomonas chlororaphis ",
+"Pseudomonas fluorescens" ,
+"Pseudomonas koreensis" ,
+"Pseudomonas mosselii" ,
+"Pseudomonas plecoglossicida" ,
+"Pseudomonas pseudoalcaligenes" ,
+"Pseudomonas putida" ,
+"Photobacterium damselae", 
+"Pasteurella piscicida",
+"Aliivibrio fischeri" ,
+"Aliivibrio logei" ,
+"Aliivibrio salmonicida" ,
+"Aliivibrio wodanis" ,
+"Vibrio aestuarianus" ,
+"Vibrio alginolyticus" ,
+"Vibrio anguillarum" ,
+"Listonella anguillarum",
+"Vibrio furnissii",
+"Vibrio harveyi",
+"Vibrio carchariae" ,
+"Vibrio trachuri" ,
+"Vibrio ichthyoenteri",
+"Vibrio mimicus" ,
+"Vibrio ordalii",
+"Vibrio parahaemolyticus",
+"Vibrio ponticus", 
+"Vibrio scophthalmi" ,
+"Vibrio splendidus" ,
+"Vibrio tapetis" ,
+"Vibrio vulnifi" ,
+"Candidatus ctinochlamydia clariae",
+"Candidatus Arthromitus",
+"Candidatus Branchiomonas cisticola",
+"Candidatus Clavochlamydia salmonicola",
+"Candidatus Piscichlamydia salmonis",
+"Candidatus Renichlamydia lutjanid",
+"Candidatus Similichlamydia latridicola",
+"Candidatus Syngnamydia Venezia",
+"Streptobacillus" ,
+"Varracalbmi", 
+"Candidatus Megaira") #Added by me
+
+
+PathogeneGenus <-c(
+  "Clostridium",
+  "Eubacterium",
+  "Carnobacterium",
+  "Enterococcus",
+  "Vagococcus", 
+  "Lactobacillus" ,
+  "Lactococcus", 
+  "Enterococcus",
+  "Streptococcus",
+  "Renibacterium",
+  "Erysipelothrix", 
+  "Bacillus",
+  "Corynebacterium", 
+  "Weissella", 
+  "Micrococcus", 
+  "Mycobacterium", 
+  "Nocardia",
+  "Rhodococcus",
+  "Planococcus", 
+  "Staphylococcus", 
+  "Aeromonas",
+  "Pseudoalteromonas", 
+  "Shewanella", 
+  "Arcobacter", 
+  "Delftia", 
+  "Citrobacter", 
+  "Edwardsiella", 
+  "Enterobacter", 
+  "Plesiomonas", 
+  "Pantoea",
+  "Enterobacter", 
+  "Providencia",
+  "Salmonella", 
+  "Serratia", 
+  "Yersinia", 
+  "Chryseobacterium", 
+  "Flavobacterium", 
+  "Flexibacter",
+  "Cytophaga",
+  "Flectobacillus" ,
+  "Tenacibaculum", 
+  "Francisella" ,
+  "Hahella",
+  "Halomonas",
+  "Deleya" ,
+  "Acinetobacter" ,
+  "Moritella" ,
+  "Mycoplasma" ,
+  "Myxococcus" ,
+  "Aquaspirillum",
+  "Janthinobacterium",
+  "Pasteurella" ,
+  "Piscirickettsia",
+  "Pseudomonas",
+  "Photobacterium", 
+  "Pasteurella",
+  "Aliivibrio" ,
+  "Vibrio" ,
+  "Listonella",
+  "Candidatus",
+  "Streptobacillus" ,
+"Varracalbmi",
+"Candidatus Megaira",
+"Candidatus ctinochlamydia",
+"Candidatus Arthromitus",
+"Candidatus Branchiomonas",
+"Candidatus Clavochlamydia",
+"Candidatus Piscichlamydia",
+"Candidatus Renichlamydia",
+"Candidatus Similichlamydia",
+"Candidatus Syngnamydia")
+
+for (i in names(pslist)[grepl("ps_SLWF_21", names(pslist))]){
+  require(tidyverse)
+  require(phyloseq)
+  require(cowplot)
+  tryCatch({
+  g       <- paste(i); print(g)
+  gg      <- sub('ps_', '', g)
+  FILENAME    <- paste(paste(save_name_16S, "Pathogenes_Genus_From_Literature", sep="_"),".png", sep="")
+
+  sample_data(pslist[[i]])$ReadNum <-rowSums(otu_table(pslist[[i]]))
+  
+  Aps_alpha_barplot <- pslist[[i]] %>%
+  #tax_glom(taxrank = "Genus") %>%                     #merges species that have the same taxonomy at a certain rank
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  #filter(Abundance > 0.05) %>%                         # Filter out low abundance taxa
+  arrange(Genus)                                      # Sort data frame alphabetically by phylum
+
+  Aps_alpha_barplot$Reps <- sub(Species, "", Aps_alpha_barplot$Replicate2)  
+  
+  Aps_alpha_barplot$ASV <- sub(".*:", "", Aps_alpha_barplot$OTU)  
+  Aps_alpha_barplot$ASV <- sub('\\.', ' ', Aps_alpha_barplot$ASV)
+  #print(Aps_alpha_barplot[grep("Megaira", Aps_alpha_barplot$ASV),]$ASV)
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot[Aps_alpha_barplot$ASV %in% PathogeneGenus,] #PathogeneSpecies
+  #print(Aps_alpha_barplot_Pathogens[grep("Megaira", Aps_alpha_barplot_Pathogens$ASV),]$ASV)
+  Aps_alpha_barplot_Pathogens<- Aps_alpha_barplot_Pathogens %>% arrange(SampleID)
+  #https://gist.github.com/svigneau/05148a7031172c2bc70d
+  
+labels <- unlist(lapply(as.character(Aps_alpha_barplot_Pathogens[!duplicated(Aps_alpha_barplot_Pathogens[,c("SampleID")]),]$ReadNum), function(x) c(x, rep("", length(unique(Aps_alpha_barplot_Pathogens$OTU))-1))))
+
+  Aps_alpha_barplot_Pathogens$Labels <- labels
+  print(head(Aps_alpha_barplot_Pathogens[, c("Labels", "ReadNum", "SampleID", "OTU")], 5))
+
+  df <- ddply(Aps_alpha_barplot_Pathogens, .(OTU), summarise,
+              OverallAbundance=(sum(Abundance)/length(unique((Aps_alpha_barplot_Pathogens$SampleID)))))
+  
+  df <- df[order(df$OverallAbundance, decreasing = TRUE), ]
+  Aps_alpha_barplot_Pathogens <- left_join(Aps_alpha_barplot_Pathogens, df)
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot_Pathogens[order(Aps_alpha_barplot_Pathogens$OverallAbundance, 
+                                                                  decreasing = TRUE), ]
+  top_20 <- df %>% top_n(20, OverallAbundance) %>% pull(OTU)
+  
+  LocOrderSL=c(
+  "Medem Grund","Brunsbuettel","Schwarztonnen Sand","Muehlenberger Loch") 
+
+    microbiomeseq_cols <- function(){
+    colours <- c("#F0A3FF", "#0075DC", "#993F00","#4C005C","#2BCE48","#FFCC99","#808080","#94FFB5","#8F7C00","#9DCC00",
+               "#C20088","#003380","#FFA405","#FFA8BB","#426600","#FF0010","#5EF1F2","#00998F","#740AFF","#990000",
+               "#FFFF00",
+                grey.colors(1000));return(colours)}
+    colours <-   microbiomeseq_cols() 
+    
+    RepOrder <-c( 
+    "WF","SU21MG","SU21BB", "SU21SS", "SU21ML")
+    
+   # if (gg == "GC") {
+   #   RepOrder <- GCOrder
+   #   } else if (gg == "OE") {
+   #   RepOrder <- OEOrder
+   #   } else if (gg == "SL") {
+   #     RepOrder <- SLOrder }
+  df <- Aps_alpha_barplot_Pathogens
+ 
+  p <-ggplot(df, 
+            aes(x = SampleID, y = Abundance, fill = factor(df$OTU, levels = unique(df$OTU)))) + 
+  geom_bar(stat = "identity") +
+  facet_grid(. ~ factor(Reps, levels=RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+  #scale_x_discrete(labels = LocOrder) + 
+  atheme2 +
+  ylab("Relative Abundance [%] \n") + xlab("Sample") +
+  #scale_color_manual(values= col.Palette.species2)+
+  #scale_fill_manual(values= col.Palette.species2)
+  ggtitle("Pathogenic Species rel. Abundance \nBacterial Communities by Sampling Site, ASVs aggregated at Species Level") +
+  scale_fill_manual(values = microbiomeseq_cols(), name= "ASVs of top 20", breaks = top_20) +
+  ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+   inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+  
+  atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent') #transparent legend panel
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+  
+  g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(col.Palette[[Species]], 0.7)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+  prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+  AAA<- plot_grid(prow, ncol = 1, rel_heights = c(100))
+  ggsave(AAA, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 15,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+
+
+
+
+GroupOfInterest <- c("ASV13:Acinetobacter.lwoffii",
+"ASV24:Acinetobacter",
+"ASV25:Polynucleobacter",
+"ASV40:Acinetobacter.johnsonii",
+"ASV50:Candidatus Megaira",
+"ASV213:Aeromonas",
+"ASV218:Shewanella.putrefaciens",
+"ASV1670:Pseudomonas.putida",
+"ASV1718:Shewanella",
+"ASV2290:Chryseobacterium.haifense")
+  
+  for (i in names(pslist)[grepl("ps_WGCNA", names(pslist))]){
+    require(tidyverse)
+    require(phyloseq)
+    require(cowplot)
+    require(plyr)
+    tryCatch({
+      g       <- paste(i); print(g)
+      gg      <- sub('ps_', '', g)
+      FILENAME    <- paste(paste(save_name_16S, "Pathogenic_ASVs_Genus_Level", sep="_"),".png", sep="")
+      
+      sample_data(pslist[[i]])$ReadNum <-rowSums(otu_table(pslist[[i]]))
+  
+  Aps_alpha_barplot <- pslist[[i]] %>%
+  #tax_glom(taxrank = "Genus") %>%                      #merges species that have the same taxonomy at a certain rank
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% # Transform to rel. abundance
+  psmelt() #%>%                                         # Melt to long format
+  #filter(Abundance > 0.05) %>%                         # Filter out low abundance taxa
+  #arrange(Species)                                      # Sort data frame alphabetically by phylum
+
+  Aps_alpha_barplot$Reps <- sub(gg, "", Aps_alpha_barplot$Replicates)  
+  Aps_alpha_barplot$ASV <- sub(".*:", "", Aps_alpha_barplot$OTU)  
+  Aps_alpha_barplot$ASV <- sub('\\.', ' ', Aps_alpha_barplot$ASV)
+  #print(Aps_alpha_barplot[grep("Megaira", Aps_alpha_barplot$ASV),]$ASV)
+
+  GroupOfInterestSpecies <- sub(".*:", "", GroupOfInterest) 
+  GroupOfInterestSpecies <-sub('\\.', ' ', GroupOfInterestSpecies)
+  
+  ######################
+  #PathogeneSpecies ASV#
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot[Aps_alpha_barplot$ASV %in% GroupOfInterestSpecies,] 
+  
+  ################
+  #For Genus glom#
+   #Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot[Aps_alpha_barplot$Genus %in% GroupOfInterestSpecies,] 
+  
+  
+  #print(Aps_alpha_barplot_Pathogens[grep("Megaira", Aps_alpha_barplot_Pathogens$ASV),]$ASV)
+  Aps_alpha_barplot_Pathogens<- Aps_alpha_barplot_Pathogens %>% arrange(SampleID)
+  #https://gist.github.com/svigneau/05148a7031172c2bc70d
+  
+  SLOrder <-c( 
+    "SLSU21MG","SLSU21BB", "SLSU21SS", "SLSU21ML")
+    
+   if (gg == "GC") {
+     RepOrder <- GCOrder
+     } else if (gg == "OE") {
+     RepOrder <- OEOrder
+     } else if (gg == "SL") {
+       RepOrder <- SLOrder }
+  
+labels <- unlist(lapply(as.character(Aps_alpha_barplot_Pathogens[!duplicated(Aps_alpha_barplot_Pathogens[,c("SampleID")]),]$ReadNum), function(x) c(x, rep("", length(unique(Aps_alpha_barplot_Pathogens$OTU))-1))))
+
+  Aps_alpha_barplot_Pathogens$Labels <- labels
+  print(head(Aps_alpha_barplot_Pathogens[, c("Labels", "ReadNum", "SampleID", "OTU")], 100))
+
+  df <- ddply(Aps_alpha_barplot_Pathogens, .(OTU), summarise,
+              OverallAbundance=(sum(Abundance)/length(unique((Aps_alpha_barplot_Pathogens$SampleID)))))
+  
+  df <- df[order(df$OverallAbundance, decreasing = TRUE), ]
+  Aps_alpha_barplot_Pathogens <- left_join(Aps_alpha_barplot_Pathogens, df)
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot_Pathogens[order(Aps_alpha_barplot_Pathogens$OverallAbundance, 
+                                                                  decreasing = TRUE), ]
+  top_20 <- df %>% top_n(20, OverallAbundance) %>% pull(OTU)
+  
+  LocOrderSL=c(
+  "Medem Grund","Oste","Brunsbuettel","Schwarztonnen Sand","Muehlenberger Loch") 
+
+    microbiomeseq_cols <- function(){
+    colours <- c("#F0A3FF", "#0075DC", "#993F00","#4C005C","#2BCE48","#FFCC99","#808080","#94FFB5","#8F7C00","#9DCC00",
+               "#C20088","#003380","#FFA405","#FFA8BB","#426600","#FF0010","#5EF1F2","#00998F","#740AFF","#990000",
+               "#FFFF00",
+                grey.colors(1000));return(colours)}
+    colours <-   microbiomeseq_cols() 
+    RepOrder <-  SLOrder
+    
+  df <- Aps_alpha_barplot_Pathogens
+  p<-ggplot(df, 
+            aes(x = SampleID, y = Abundance, fill = factor(df$OTU, levels = unique(df$OTU)))) + 
+  geom_bar(stat = "identity") +
+  facet_grid(. ~ factor(Reps, levels=RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+  #scale_x_discrete(labels = LocOrder) + 
+  atheme2 +
+  ylab("Relative Abundance [%] \n") + xlab("Sample") +
+  #scale_color_manual(values= col.Palette.species2)+
+  #scale_fill_manual(values= col.Palette.species2)
+  ggtitle("Pathogenic Species rel. Abundance \nBacterial Communities by Sampling Site, ASVs aggregated at Species Level") +
+  scale_fill_manual(values = microbiomeseq_cols(), name= "ASVs of top 20", breaks = top_20) +
+  ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+   inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+ 
+  atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank()) +
+  theme(panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent')) + #transparent legend panel
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+  g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(col.Palette[[Species]], 0.7)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+  prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+  AAA<- plot_grid(prow, ncol = 1, rel_heights = c(100))
+  ggsave(AAA, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 15,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}  
+```
+
+### 2.8.2 ASV level Plot form 
+
+```{r,  message=FALSE,warning=FALSE}
+GroupOfInterest <- c(
+"ASV15:Verticiella",
+"ASV1432:Verticiella",
+"ASV306:Shewanella.baltica",
+"ASV1632:Shewanella",
+"ASV708:Shewanella",
+"ASV413:Shewanella",
+"ASV146:Shewanella",
+"ASV485:Aeromonas",
+"ASV977:Acinetobacter.johnsonii",
+"ASV195:Acinetobacter.johnsonii",
+"ASV95:Acinetobacter",
+"ASV1105:Pseudomonas",
+"ASV221:Shewanella.putrefaciens",
+"ASV146:Shewanella",
+"ASV846:Aeromonas",
+"ASV806:Aeromonas",
+"ASV3501:Chryseobacterium.piscicola",
+"ASV306:Shewanella.baltica",
+"ASV415:Shewanella"
+)
+  
+for (i in names(pslist)[grepl("ps_WGCNA", names(pslist))]){
+    require(tidyverse)
+    require(phyloseq)
+    require(cowplot)
+    require(plyr)
+    tryCatch({
+      g       <- paste(i); print(g)
+      gg      <- sub('ps_', '', g)
+      FILENAME    <- paste(paste(save_name_16S, "Pathogenic_ASVs_Level", sep="_"),".png", sep="")
+      sample_data(pslist[[i]])$ReadNum <-rowSums(otu_table(pslist[[i]]))
+  
+  Aps_alpha_barplot <- pslist[[i]] %>%
+  #tax_glom(taxrank = "Genus") %>%                      #merges species that have the same taxonomy at a certain rank
+  transform_sample_counts(function(x) {x/sum(x)*100} ) %>% # Transform to rel. abundance
+  psmelt() #%>%                                         # Melt to long format
+  #filter(Abundance > 0.05) %>%                         # Filter out low abundance taxa
+  #arrange(Species)                                      # Sort data frame alphabetically by phylum
+
+  Aps_alpha_barplot$Reps <- sub(gg, "", Aps_alpha_barplot$Replicates)  
+  Aps_alpha_barplot$ASV <- Aps_alpha_barplot$OTU #sub(".*:", "", Aps_alpha_barplot$OTU)  
+  #Aps_alpha_barplot$ASV <- #sub('\\.', ' ', Aps_alpha_barplot$ASV)
+  #print(Aps_alpha_barplot[grep("Megaira", Aps_alpha_barplot$ASV),]$ASV)
+
+  #GroupOfInterestSpecies <- sub(".*:", "", GroupOfInterest) 
+  #GroupOfInterestSpecies <-sub('\\.', ' ', GroupOfInterestSpecies)
+  
+  ######################
+  #PathogeneSpecies ASV#
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot[Aps_alpha_barplot$ASV %in% GroupOfInterest,] 
+  
+  ################
+  #For Genus glom#
+   #Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot[Aps_alpha_barplot$Genus %in% GroupOfInterestSpecies,] 
+  
+  
+  #print(Aps_alpha_barplot_Pathogens[grep("Megaira", Aps_alpha_barplot_Pathogens$ASV),]$ASV)
+  Aps_alpha_barplot_Pathogens<- Aps_alpha_barplot_Pathogens %>% arrange(SampleID)
+  #https://gist.github.com/svigneau/05148a7031172c2bc70d
+  
+  RepOrder <-c( 
+    "SLSU21MG","SLSU21BB", "SLSU21SS", "SLSU21ML")
+    
+   # if (gg == "GC") {
+   #   RepOrder <- GCOrder
+   #   } else if (gg == "OE") {
+   #   RepOrder <- OEOrder
+   #   } else if (gg == "SL") {
+   #     RepOrder <- SLOrder }
+  
+labels <- unlist(lapply(as.character(Aps_alpha_barplot_Pathogens[!duplicated(Aps_alpha_barplot_Pathogens[,c("SampleID")]),]$ReadNum), function(x) c(x, rep("", length(unique(Aps_alpha_barplot_Pathogens$OTU))-1))))
+
+  Aps_alpha_barplot_Pathogens$Labels <- labels
+  print(head(Aps_alpha_barplot_Pathogens[, c("Labels", "ReadNum", "SampleID", "OTU")], 5))
+
+  df <- ddply(Aps_alpha_barplot_Pathogens, .(OTU), summarise,
+              OverallAbundance=(sum(Abundance)/length(unique((Aps_alpha_barplot_Pathogens$SampleID)))))
+  
+  df <- df[order(df$OverallAbundance, decreasing = TRUE), ]
+  Aps_alpha_barplot_Pathogens <- left_join(Aps_alpha_barplot_Pathogens, df)
+  Aps_alpha_barplot_Pathogens <- Aps_alpha_barplot_Pathogens[order(Aps_alpha_barplot_Pathogens$OverallAbundance, 
+                                                                  decreasing = TRUE), ]
+  top_20 <- df %>% top_n(20, OverallAbundance) %>% pull(OTU)
+  
+  LocOrderSL=c(
+  "Medem Grund","Brunsbuettel","Schwarztonnen Sand","Muehlenberger Loch") 
+
+    microbiomeseq_cols <- function(){
+    colours <- c("#F0A3FF", "#0075DC", "#993F00","#4C005C","#2BCE48","#FFCC99","#808080","#94FFB5","#8F7C00","#9DCC00",
+               "#C20088","#003380","#FFA405","#FFA8BB","#426600","#FF0010","#5EF1F2","#00998F","#740AFF","#990000",
+               "#FFFF00",
+                grey.colors(1000));return(colours)}
+    colours <-   microbiomeseq_cols() 
+    RepOrder <-  SLOrder
+    
+  df <- Aps_alpha_barplot_Pathogens
+  p<-ggplot(df, 
+            aes(x = SampleID, y = Abundance, fill = factor(df$OTU, levels = unique(df$OTU)))) + 
+  geom_bar(stat = "identity") +
+  facet_grid(. ~ factor(Reps, levels=RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+  #scale_x_discrete(labels = LocOrder) + 
+  atheme2 +
+  ylab("Relative Abundance [%] \n") + xlab("Sample") +
+  #scale_color_manual(values= col.Palette.species2)+
+  #scale_fill_manual(values= col.Palette.species2)
+  ggtitle("Pathogenic Species rel. Abundance \nBacterial Communities by Sampling Site, ASVs aggregated at Species Level") +
+  scale_fill_manual(values = microbiomeseq_cols(), name= "ASVs of top 20", breaks = top_20) +
+  ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+   inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+ 
+  atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank()) +
+  theme(panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent')) + #transparent legend panel
+  theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+  g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(col.Palette[[Species]], 0.7)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+  prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+  AAA<- plot_grid(prow, ncol = 1, rel_heights = c(100))
+  ggsave(AAA, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 15,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}  
+```
+
+#- 
+
+# 3 RNAseq Gill 
+
+Individual Co-Expression networks
+
+## 3.1 Gill RNA Setup
+
+```{r,  message=FALSE,warning=FALSE}
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+#Read in the female liver data set
+
+set.seed(123)
+Species    <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "RNA"
+Tissue     <- "Gill"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "RNAseq-"
+
+#####################
+Tissue <- "Gill"
+variable <- "Replicates"
+#####################
+
+save_name_RNA_Gill <- paste(Species, Year,Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA, paste(Analysis, "_", sep="")), save_name_RNA_Gill, ".RData")
+
+##################
+#Sample selection#
+##################
+cat(paste(shQuote(SAMDF_RNA_Gill$SampleID, type="cmd"), collapse=", ")) 
+
+# "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Gill_All<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3", "SLSU21MGEB4",  "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6",  "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Gill<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4",                "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+#"SLSU21MGEB5" outlier in sample Clustering
+#"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+#"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+```
+
+
+
+## 3.2 DESeq2
+
+```{r,  message=FALSE,warning=FALSE}
+Samples_RNA_Gill_List <- list("Samples_RNA_Gill_All" = Samples_RNA_Gill_All, "Samples_RNA_Gill"=Samples_RNA_Gill)
+
+WGCNA_RNA_Gill <- list()
+for (Gills in names(Samples_RNA_Gill_List)){
+
+  WGCNA_RNA_Gill[[Gills]] <- list()
+  
+  Samples <- Samples_RNA_Gill_List[[Gills]]
+  
+  SAMDF_RNA_Gill           <- SAMDF_RNA_Gill[SAMDF_RNA_Gill$SampleID %in% Samples,]
+
+  SAMDF_RNA_Gill  <-SAMDF_RNA_Gill %>% arrange(factor(rownames(SAMDF_RNA_Gill), levels = Samples))
+  rownames(SAMDF_RNA_Gill) <-SAMDF_RNA_Gill$SampleID
+
+#=====================================================================================
+# ExperimentalDesign & Filter
+#=====================================================================================
+  cnt_RNA_Gill    <- cnt_RNA_Gill[,SAMDF_RNA_Gill$SampleID] 
+
+  #ExperimentalDesign
+  library(DESeq2)
+  dds_RNA_Gill <- DESeqDataSetFromMatrix(countData = cnt_RNA_Gill,
+                              colData = SAMDF_RNA_Gill,
+                              design = ~ Replicates)
+  vst_RNA_Gill <- vst(dds_RNA_Gill, blind = FALSE)
+
+  ##################
+  # SampleDist PCAs#
+  ##################
+  vst_RNA_list <- list("vst_RNA_Gill" =vst_RNA_Gill)
+  for (i in names(vst_RNA_list)[grepl("vst", names(vst_RNA_list))]){
+    require(plyr)
+    require(ggrepel) 
+    require(cowplot)
+    if (OperatingSystem == "Mac" ) {
+       quartz() }
+    tryCatch({
+    g       <- paste(i) 
+    gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  RNA_vst_PCA_Gill <-pcaplotRK3(vst_RNA_list[[i]],intgroup = c("Replicates"), pcX = 1, pcY = 2, title="",
+                   ellipse = TRUE,     ellipse.prob = 0.5) +
+  scale_fill_manual(values=col.Palette$SL) + #col.Palette.SeqCenter #col.Palette.Cruises
+  scale_color_manual(values=col.Palette$SL) + atheme +
+  theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+  theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+  prow <- cowplot::plot_grid(RNA_vst_PCA_Gill, labels = c(""), ncol = 1)
+  title <- ggdraw() + draw_label_themeRKwhite(paste(Species,  gg, Type, Gills), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRKwhite(paste("vst-PCA", "with",       ... = 
+  length(rownames(vst_RNA_list[[i]])),"genes",sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0,   
+  vjust = 1)
+  RNA_vst_PCA_Gill<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0, 0.05, 0.989))
+  ggsave(RNA_vst_PCA_Gill, filename = paste(paste(save_name_RNA_Gill, "vst-PCA", Gills, sep="_"),".png", sep=""), path = pathPlots ,
+         device='png', dpi=300, width = 7,
+  height = 7)
+  plot(RNA_vst_PCA_Gill)
+  WGCNA_RNA_Gill[[Gills]]$RNA_vst_PCA_Gill <- RNA_vst_PCA_Gill
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+
+  #######################
+  ### 3.1.2 Clustering###
+  #######################
+
+  ########################################
+  # Get overview of normalized data#
+  # dds <- DESeq(dds)
+  # VST <- getVarianceStabilizedData(dds)
+  # rv_VST <- rowVars(VST)
+  # summary(rv_VST)
+  # q75_VST <- quantile( rowVars(VST), .75)  # <= original
+  # expr_normalized <- VST[ rv_VST > q75_VST, ]
+  # 
+  # expr_normalized_df <- data.frame(expr_normalized) %>%
+  #   mutate(Gene_id = row.names(expr_normalized)) %>% pivot_longer(-Gene_id)
+  # 
+  # expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  #   geom_violin() +
+  #   geom_point() +
+  #   theme_bw() +
+  #   theme(axis.text.x = element_text( angle = 90)) +
+  #   ylim(0, NA) +
+  #   labs(
+  #     title = "Normalized and 75 quantile Expression",
+  #     x = "treatment",y = "normalized expression")
+  ####################################################
+
+  #=====================================================================================
+  #  Code chunk 3
+  #=====================================================================================
+  library(WGCNA)
+  #rlog-Transformation
+  omics_data0 <-data.frame(t(assay(vst_RNA_Gill)))
+  a <- length(omics_data0)
+  gsg = goodSamplesGenes(omics_data0, verbose = 3);
+  gsg$allOK
+
+  #=====================================================================================
+  #  Code chunk 4
+  #=====================================================================================
+  if (!gsg$allOK) {
+    # Optionally, print the gene and sample names that were removed:
+    if (sum(!gsg$goodGenes)>0) 
+     print(paste("Removing genes"));
+    if (sum(!gsg$goodSamples)>0) 
+     print(paste("Removing samples:"));
+    # Remove the offending genes and samples from the data:
+    omics_data0 = omics_data0[gsg$goodSamples, gsg$goodGenes]
+  }
+  b <- length(omics_data0)
+
+  print(paste("genes before", a))
+  print(paste("genes before", b))
+  print(paste("genes before", b-a))
+
+  #=====================================================================================
+  #  Code chunk 5
+  #=====================================================================================
+  sampleTree = hclust(dist(omics_data0), method = "average");
+  # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+  # The user should change the dimensions if the window is too large or too small.
+  sizeGrWindow(12,9)
+  #pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+  par(cex = 0.6);
+  par(mar = c(0,4,2,0))
+  plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+
+  #=====================================================================================
+  #  Code chunk 6
+  #=====================================================================================
+  # Plot a line to show the cut
+  abline(h = 100, col = "red");
+  # Determine cluster under the line
+  clust = cutreeStatic(sampleTree, cutHeight = 100, minSize = 10)
+  table(clust)
+  # clust 1 contains the samples we want to keep.
+  recordPlot() -> SampleClusteringTreePlot
+
+  #in Case we would exclude outliers from the tree: 
+  #keepSamples = (clust==1)
+  #omics_data0 = omics_data0[keepSamples, ]
+
+  #Keep all samples
+  omics_data = omics_data0
+  nGenes = ncol(omics_data)
+  nSamples = nrow(omics_data)
+
+  #=====================================================================================
+  #  Code chunk 7
+  #=====================================================================================
+  datTraits<-SAMDF_RNA_Gill[,traitData]
+  datTraits <- datTraits[rownames(datTraits) %in% rownames(omics_data),]
+  collectGarbage()
+
+  #=====================================================================================
+  #  Code chunk 8
+  #=====================================================================================
+  # Re-cluster samples
+  sampleTree2 = hclust(dist(omics_data), method = "average")
+  # Convert traits to a color representation: white means low, red means high, grey means missing entry
+  traitColors = numbers2colors(datTraits, signed = FALSE)
+  # Plot the sample dendrogram and the colors underneath.
+  plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits), 
+                    main = "Sample dendrogram and trait heatmap")
+  recordPlot() -> SampleClusteringTreeTraitsPlot
+
+  #=====================================================================================
+  #  Code chunk 9
+  #=====================================================================================
+
+  WGCNA_RNA_Gill[[Gills]]$omics_data <- omics_data
+  WGCNA_RNA_Gill[[Gills]]$datTraits  <- datTraits
+  WGCNA_RNA_Gill[[Gills]]$SAMDF_RNA_Gill  <-  SAMDF_RNA_Gill
+  WGCNA_RNA_Gill[[Gills]]$SampleClusteringTreePlot  <- SampleClusteringTreePlot
+  WGCNA_RNA_Gill[[Gills]]$SampleClusteringTreeTraitsPlot <- SampleClusteringTreeTraitsPlot
+  
+}
+
+SAMDF_RNA_Gill <-WGCNA_RNA_Gill$Samples_RNA_Gill$SAMDF_RNA_Gill
+omics_data<- WGCNA_RNA_Gill$Samples_RNA_Gill$omics_data
+datTraits<- WGCNA_RNA_Gill$Samples_RNA_Gill$datTraits
+save(omics_data, datTraits, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "dataInput", Date, sep="_"), ".RData", sep=""))))
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(WGCNA_RNA_Gill$Samples_RNA_Gill_All$SampleClusteringTreePlot, WGCNA_RNA_Gill$Samples_RNA_Gill$SampleClusteringTreePlot, labels = c("A", "B"), rel_heights = c(1,1), rel_widths =  c(1,0.8), ncol = 2) -> part_1
+part_1
+cowplot::plot_grid(WGCNA_RNA_Gill$Samples_RNA_Gill_All$RNA_vst_PCA_Gill, WGCNA_RNA_Gill$Samples_RNA_Gill$RNA_vst_PCA_Gill, labels = c("C", "D"), rel_heights = c(1,1), rel_widths =  c(1,1), ncol = 2) -> part_2
+part_2
+cowplot::plot_grid(part_1, part_2, ncol = 1) -> part_3
+ggsave(part_3, filename = paste(paste(save_name_RNA_Gill, "SSU_DataInputPlot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 12)
+part_3
+```
+
+
+## 3.3 Network construction
+
+Soft Threshold
+Find the soft thresholding power beta to which co-expression similarity is raised to calculate adjacency,
+based on the criterion of approximate scale-free topology. 
+
+The general guidance for WGCNA and hdWGCNA is to pick the lowest soft power threshold that has a Scale Free Topology Model Fit greater than or equal to 0.8, so in this case we would select our soft power threshold as 9. Later on, the ConstructNetwork will automatically select the soft power threshold if the user does not provide one.
+
+#### 3.3.1 Pick Soft Threshold
+
+```{r,  message=FALSE,warning=FALSE}
+#=====================================================================================
+#  Code chunk 1
+#=====================================================================================
+# Load the WGCNA package
+library(WGCNA)
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+# Allow multi-threading within WGCNA. At present this call is necessary.
+# Any error here may be ignored but you may want to update WGCNA if you see one.
+# Caution: skip this line if you run RStudio or other third-party R environments.
+# See note above.
+#enableWGCNAThreads()
+# Load the data saved in the first part
+lnames = load(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "dataInput", Date, sep="_"), ".RData", sep=""))))
+#The variable lnames contains the names of loaded variables.
+lnames
+
+#=====================================================================================
+#  Code chunk 2
+#=====================================================================================
+#from Strand et al, 2021
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+  allowWGCNAThreads() #needed otherwise would not work! https://www.biostars.org/p/122349/
+  sft = pickSoftThreshold(omics_data, powerVector = powers, verbose = 5)
+  # Plot the results:
+  # Find the soft thresholding power beta to which co-expression similarity is raised to calculate adjacency.
+  # based on the criterion of approximate scale-free topology.
+  idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.90))
+  if(is.infinite(idx)){
+    idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.80))
+    if(!is.infinite(idx)){
+      st <- sft$fitIndices[idx,1]
+      } else{
+     idx <- which.max(-sign(sft$fitIndices[,3])*sft$fitIndices[,2])
+      st <- sft$fitIndices[idx,1]
+    }
+  } else{st <- sft$fitIndices[idx,1]}
+  # Plot Scale independence measure and Mean connectivity measure
+
+  # Scale-free topology fit index as a function of the soft-thresholding power
+  data.frame(Indices = sft$fitIndices[,1],
+           sfApprox = -sign(sft$fitIndices[,3])*sft$fitIndices[,2]) %>% 
+    ggplot() + 
+    geom_hline(yintercept = 0.9, color = "red", alpha = 0.6) + # corresponds to R^2 cut-off of 0.9
+    geom_hline(yintercept = 0.8, color = "red", alpha = 0.2) + # corresponds to R^2 cut-off of 0.8
+    geom_line(aes(x = Indices, y = sfApprox), color = "red", alpha = 0.1, size = 2.5) +
+    geom_text(mapping = aes(x = Indices, y = sfApprox, label = Indices), color = "red", size = 4) +
+    ggtitle("Scale independence") +
+    xlab("Soft Threshold (power)") +
+    ylab("SF Model Fit,signed R^2") +
+    xlim(1,20) +
+    ylim(-1,1) +
+    geom_segment(aes(x = st, y = 0.25, xend = st, yend = sfApprox[idx]-0.05), 
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.5)-> scale_independence_plot 
+  
+# Mean connectivity as a function of the soft-thresholding power
+  data.frame(Indices = sft$fitIndices[,1],
+           meanApprox = sft$fitIndices[,5]) %>% 
+    ggplot() + 
+    geom_line(aes(x = Indices, y = meanApprox), color = "red", alpha = 0.1, size = 2.5) +
+    geom_text(mapping = aes(x = Indices, y = meanApprox, label = Indices), color = "red", size = 4) +
+    xlab("Soft Threshold (power)") +
+    ylab("Mean Connectivity") +
+    geom_segment(aes(x = st-0.4, 
+                   y = sft$fitIndices$mean.k.[idx], 
+                   xend = 0, 
+                   yend = sft$fitIndices$mean.k.[idx]),
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.4) +
+    ggtitle(paste0("Mean connectivity: ", 
+                 round(sft$fitIndices$mean.k.[idx],2))) -> mean_connectivity_plot
+
+  si_mc_plot <- cowplot::plot_grid(scale_independence_plot, mean_connectivity_plot, ncol = 2, align = "h", labels = c("A", "B"))
+
+  si_mc_plot
+  ggsave(si_mc_plot, filename = paste(paste(save_name_RNA_Gill, "soft_thresholding_power", sep="_"),".png", sep=""), path = pathPlots,
+         device='png', dpi=300, width = 8, height = 6)
+
+  softPower = st; print(paste("SoftPower chosen to", softPower))
+
+  softPower <- 6
+```
+
+#### 3.3.2  blockwiseModules
+
+deepSplit integer value between 0 and 4. Provides a simplified control over how sensitive
+module detection should be to module splitting, with 0 least and 4 most sensitive.
+See cutreeDynamic for more details.
+
+```{r,  message=FALSE,warning=FALSE}
+##################
+#blockwiseModules#
+##################
+softPower = softPower; print(paste("SoftPower chosen to", softPower))
+
+#https://www.biostars.org/p/305714/
+#there is a problem with cor form stats and cor from WGCNA, restart R
+network = blockwiseModules(omics_data, 
+                       power = softPower,
+                       networkType = "signed", 
+                       TOMType = "signed",
+                       corType = "bicor",
+                       minModuleSize = 30, #for genes 30
+                       reassignThreshold = 0, 
+                       deepSplit = 2,
+                       mergeCutHeight = 0.25,
+                       numericLabels = TRUE, 
+                       pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"), 
+                       verbose = 3)
+
+#Strand et., 2021
+# network <- blockwiseModules(omics_data,
+#                           power = st, 
+#                           networkType = "signed", 
+#                           TOMType = "signed",
+#                           corType = "bicor",
+#                           maxPOutliers = 0.05,
+#                           deepSplit = 4, # Default 2
+#                           minModuleSize = 2, # 30
+#                           minCoreKME = 0.5,      # Default 0.5
+#                           minCoreKMESize = 2,    # Default minModuleSize/3,
+#                           minKMEtoStay = 0.5,    # Default 0.3
+#                           reassignThreshold = 0, # Default 1e-6
+#                           mergeCutHeight = 0.4,  # Default 0.15
+#                           pamStage = FALSE, 
+#                           pamRespectsDendro = TRUE,
+#                           replaceMissingAdjacencies = TRUE,
+#                           numericLabels = TRUE,
+#                           saveTOMs = TRUE,
+#                           saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"),
+#                           verbose = 3)
+
+###########
+#Save Data#
+moduleLabels = network$colors
+moduleColors = labels2colors(network$colors)
+MEs = network$MEs;
+geneTree = network$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,
+     file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "networkConstruction-auto", Date, sep="_"), ".rds", sep=""))))
+
+RNA_Gill_WGCNA <- list("RNA_Gill_omics_data" = omics_data, 
+                       "RNA_Gill_datTraits"=datTraits,
+                       "RNA_Gill_MEs"=MEs,
+                       "RNA_Gill_moduleLabels"=moduleLabels,
+                       "RNA_Gill_moduleColors"=moduleColors,
+                       "RNA_Gill_geneTree"=geneTree)
+
+saveRDS(RNA_Gill_WGCNA, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "List", Date, sep="_"), ".rds", sep=""))))
+```
+
+#### 3.3.3 Module & Network Visualization
+
+```{r,  message=FALSE,warning=FALSE, fig.width=15, fig.height=10}
+#####################
+#plotDendroAndColors#
+#####################
+
+##############################
+#Number of ASV in each module#
+##############################
+as.data.frame(table(RNA_Gill_WGCNA$RNA_Gill_moduleLabels)) %>% 
+  dplyr::rename(Module = Var1, Size = Freq) %>%
+  dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+module_size %>% 
+  ggplot(aes(x = Module, y = Size, fill = Module)) +
+  geom_col(color =  "#000000") +
+  ggtitle("Number of genes in each module") +
+  theme(legend.position = "none") + 
+  scale_fill_manual(values = setNames(module_size$Module_color,module_size$Module)) +
+  geom_text(aes(label = Size),vjust = 0.5, hjust = -0.18, size = 3.5) +
+  ylim(0, max(module_size$Size)*1.1) +
+  theme(plot.margin = margin(2, 2, 2, 2, "pt")) +
+  coord_flip() -> RNAModuleSizePlot
+
+RNAModuleSizePlot
+ggsave(RNAModuleSizePlot, filename = paste(paste(save_name_RNA_Gill, "RNAModulePlot", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+#######################################
+#Module-Eigenegene-Correlation-Heatmap#
+#######################################
+MEs_R <- bicor(MEs, MEs, maxPOutliers = 0.05)
+idx.r <- which(rownames(MEs_R) == "ME0")
+idx.c <- which(colnames(MEs_R) == "ME0")
+MEs_R_noME0 <- MEs_R[-idx.r, -idx.c]
+
+MEs_R_noME0[upper.tri(MEs_R_noME0)] %>% 
+  as.data.frame() %>% 
+  dplyr::rename("correlation" = ".") %>% 
+  ggplot(aes(x=correlation)) + 
+  geom_histogram(bins = 20) +
+  #geom_density() + 
+  xlim(-1, 1) +
+  ggtitle(paste0(prefix,"ME correlation\n w/o ",prefix ,"ME0")) -> MEs_R_density
+MEs_R_density
+
+pheatmap::pheatmap(MEs_R_noME0, color = colorRampPalette(c("Blue", "White", "Red"))(100),
+                   silent = T, 
+                   breaks = seq(-1,1,length.out = 101),
+                   treeheight_row = 5, 
+                   treeheight_col = 5,
+                   main = paste0(prefix,"ME correlation heatmap w/o ",prefix ,"ME0"),
+                   labels_row = paste0(prefix, rownames(MEs_R)),
+                   labels_col = paste0(prefix, colnames(MEs_R))) -> MEs_R_Corr
+MEs_R_Corr
+ggsave(MEs_R_Corr, filename = paste(paste(save_name_RNA_Gill, "MEs_R_Corr", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+cowplot::plot_grid(MEs_R_density, MEs_R_Corr$gtable, labels = c("D", "E"), rel_widths = c(0.6, 1)) -> density_eigen
+
+
+#######################
+#Network-Visualization#
+#######################
+# 5 Visualization of networks within R
+# 5.a Visualizing the gene network
+# One way to visualize a weighted network is to plot its heatmap, Fig. 1. Each row and column of the heatmap
+# correspond to a single gene. The heatmap can depict adjacencies or topological overlaps, with light colors denoting
+# low adjacency (overlap) and darker colors higher adjacency (overlap). In addition, the gene dendrograms and module
+# colors are plotted along the top and left side of the heatmap. The package provides a convenient function to create
+# such network plots; Fig. 1 was created using the following code. This code can be executed only if the network
+# was calculated using a single-block approach (that is, using the 1-step automatic or the step-by-step tutorials). If
+# the networks were calculated using the block-wise approach, the user will need to modify this code to perform the
+# visualization in each block separately. The modi cation is simple and we leave it as an exercise for the interested
+# reader.
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+
+# dissTOM = 1-TOMsimilarityFromExpr(omics_data, power = softPower);
+# # Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+# plotTOM = dissTOM^10;
+# # Set diagonal to NA for a nicer plot
+# diag(plotTOM) = NA;
+# # Call the plot function
+# TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+
+#############################
+# Correlation within modules# from Strand et al, 2021
+#############################
+corr_within_module <- function(omics_data, network, module_x = 1){
+  idx.omics_data <- which(network$colors == module_x)
+  idx.me <- which(colnames(network$MEs) == paste0("ME",module_x))
+  kME_x <- bicor(omics_data[,idx.omics_data], network$MEs[,idx.me], maxPOutliers = 0.05)
+  kME_x}
+ggplot.list <- list()
+for(m in colnames(network$MEs)){
+  h <- as.numeric(sub("ME","", m))
+  data.frame(x = suppressWarnings(corr_within_module(omics_data = omics_data, network = network, module_x = h))) %>% 
+    ggplot() + 
+    geom_histogram(aes(x), fill = labels2colors(h), color = "black", alpha = 0.5, bins = 20) + 
+    xlim(-1, 1) +
+    xlab("ASV correlation")+
+    ggtitle(paste0(prefix,m)) -> da_plot
+  ggplot.list[[m]] <- da_plot}
+ggplot.list <- ggplot.list[ggplot.list %>% names() %>% sub("ME", "", .) %>% as.numeric() %>% order()]
+
+cowplot::plot_grid(plotlist = ggplot.list, ncol = 3) -> density_all_plot
+density_all_plot
+
+ggsave(density_all_plot, filename = paste(paste(save_name_RNA_Gill, "WithinModuleCorrelation", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 20)
+
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(si_mc_plot, RNAModuleSizePlot, labels = c("","C"), ncol = 2) -> part_1
+cowplot::plot_grid(part_1, density_eigen, labels = c("", ""), ncol = 1, rel_widths = c(1,1)) -> part_2
+ggsave(part_2, filename = paste(paste(save_name_RNA_Gill, "RNA_Gill_Network", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,
+  height = 8)
+part_2
+```
+
+## 3.4 Module-Trait-Correlation Heatmap
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=10}
+###################
+#Self made Heatmap#
+###################
+#https://bioinformaticsworkbook.org/tutorials/wgcna.html#gsc.tab=0
+# Define numbers of genes and samples
+MEs = orderMEs(RNA_Gill_WGCNA$RNA_Gill_MEs)
+names(MEs) = names(MEs) %>% gsub("ME","", .)  %>% paste("RNA",., sep="")
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+textMatrix <- paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) <- dim(moduleTraitCor)
+
+# Add treatment names
+MEs$treatment = row.names(MEs)
+mat <- as.data.frame(t(moduleTraitCor))
+mat$traits <- rownames(mat)
+# tidy & plot data
+module_order = names(MEs) 
+
+mME = mat %>%
+  pivot_longer(-traits) %>%
+  mutate(#name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+
+textMatrixLong <-  as.data.frame(t(signif(moduleTraitCor, 2)))
+textMatrixLong$traits <- rownames(textMatrixLong)
+textMatrixLong = textMatrixLong %>%
+  pivot_longer(-traits) %>%
+  mutate(
+    #name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong <- as.data.frame(textMatrixLong)
+
+textMatrixLong2 <-  as.data.frame(t(signif(moduleTraitPvalue, 1)))
+textMatrixLong2$traits <- rownames(textMatrixLong2)
+textMatrixLong2 = textMatrixLong2%>%
+  pivot_longer(-traits) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong2 <- as.data.frame(textMatrixLong2)
+
+## add gene counts per module
+ genesmod<- as.data.frame(moduleLabels)
+ genesmod$genes <- rownames(genesmod)
+ genesmod$Modules <- paste("RNA",genesmod$moduleLabels, sep="") #labels2colors(genesmod$moduleLabels)
+ 
+ModCount <- as.data.frame(genesmod %>% 
+  dplyr::group_by(Modules) %>% 
+  dplyr::summarise(n = n()) )
+ModCount <- ModCount[order(as.numeric(ModCount$n), decreasing = T),]
+
+
+HM <- mME %>% ggplot(., aes(x=traits, y=name, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "steelblue1",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+ggsave(A, filename = paste(paste(save_name_RNA_Gill, "WGCNA-ModuleHeatmap", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+      
+ 
+mME<- mME%>% mutate(Category = case_when((traits %in% c(
+"O2",         
+"Salinity",    
+"SecchiDepth"
+)) ~ "Abiotics", 
+(traits %in% c(
+"FultonK", 
+"Length",
+"Weight",
+"StomachContent",
+"HSI",              
+"SSI")) ~ "Physiology")); Order<- c("Abiotics", "Physiology")
+ 
+HM <- mME %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+  geom_tile() +
+    scale_fill_gradientn(
+      colours = c("steelblue1", "white", "red"),
+      limit = c(-1,1), 
+      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+  scale_x_discrete(limits=ModCount$Modules, labels=paste(ModCount$Modules, ": ", ModCount$n)) +
+  facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+      
+ggsave(A, filename = paste(paste(save_name_RNA_Gill, "WGCNA-ModuleHeatmap-2", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 13, height = 7) 
+      
+
+##################
+#Specific Modules#
+##################
+ #  Module <- "steelblue"
+ #  HM <- mME[mME$name == Module,] %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+ #  geom_tile() +
+ #    scale_fill_gradientn(
+ #      colours = c("steelblue1", "white", "red"),
+ #      limit = c(-1,1),
+ #      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+ #  # scale_fill_gradient2(
+ #  #   low = "steelblue1",
+ #  #   high = "red",
+ #  #   mid = "white",
+ #  #   midpoint = 0,
+ #  #   limit = c(-1,1))
+ #  #facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+ #  theme(axis.text.x = element_text(angle=90)) +
+ #  labs(title = "", y = "Modules", fill="corr") +
+ #  geom_text(aes(label=textMatrixLong[textMatrixLong$name == Module,]$value), position=position_nudge(y=0.2),
+ #                      size=3, colour="grey20") +
+ #  geom_text(aes(label=paste0("(",textMatrixLong2[textMatrixLong2$name == Module,]$value,")")), position=position_nudge(y=-0.2),
+ #                      colour="grey20", size=3) +
+ #   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+ #      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+ #      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ # A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+ #      plot(A)
+ #      ggsave(A, filename = paste("WGCNA-ModuleHeatmap", Module, sep="_"), path = pathPlots,
+ #             device='png', dpi=300, width = 2.8,height = 7)
+```
+
+## 3.6 Dataframe Module-Genes
+
+```{r,  message=FALSE,warning=FALSE}
+RNA_Gill_WGCNA<- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "List", Date, sep="_"), ".rds", sep=""))))
+
+InterestingComparison <- RNA_Gill_WGCNA$RNA_Gill_MEs
+Module_Genes_list <- list()
+for (MODULE in names(InterestingComparison)) {
+  a <- length(Module_Genes_list)
+  ExpressionSet <- RNA_Gill_WGCNA$RNA_Gill_omics_data
+  moduleLabels  <- RNA_Gill_WGCNA$RNA_Gill_moduleLabels
+  Annotations   <- SLUCGeneManual
+  
+  genes_of_interest <- as.data.frame(names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))]))
+  #print(head(names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))])))
+  colnames(genes_of_interest) <- "rowname"
+  print(paste("Module genes before Conversion to EntrezIDs"))
+  print(paste(MODULE, dim(genes_of_interest)[1]))
+  
+  ########################################
+  #Add annotated Gene-Names to omics data#
+  ########################################
+  #print(paste("Lost by double dot to dot conversion somwhere in the pipeline"))
+  #print(genes_of_interest$rowname[genes_of_interest$rowname %in% SLUCGeneManual$rowname == FALSE])
+  
+  AnnotationDbi_genes  <-dplyr::left_join(genes_of_interest, SLUCGeneManual)
+  AnnotationDbi_genes$GeneSymbolHS <- AnnotationDbi_genes$Human_SYMBOL_Manual
+  AnnotationDbi_genes2  <- as.data.frame(AnnotationDbi_genes$Human_SYMBOL_Manual)
+  colnames(AnnotationDbi_genes2) <- "GeneSymbolHS"
+  library(org.Hs.eg.db)
+  HS<-AnnotationDbi::select(org.Hs.eg.db, AnnotationDbi_genes2$GeneSymbolHS, "ENTREZID","SYMBOL") #Get EntrezIDs from Symbol
+  #CHECK!#
+  subset(HS, is.na(HS$ENTREZID))
+  dim(subset(HS, is.na(HS$ENTREZID)))
+  AnnotationDbi_genes2 <- dplyr::left_join(AnnotationDbi_genes2, HS, by=c("GeneSymbolHS" = "SYMBOL"))
+  dedup_ids = AnnotationDbi_genes2[!duplicated(AnnotationDbi_genes2[c("ENTREZID")]),]
+  dedup_ids <- dedup_ids[!is.na(dedup_ids$ENTREZID),]
+  print(paste("Module genes After Conversion to EntrezIDs"))
+  print(paste(MODULE, dim(dedup_ids)[1]))
+  #print(head(dedup_ids))
+  A<- dplyr::left_join(AnnotationDbi_genes[c("Geneid", "GeneSymbolHS")], dedup_ids)
+  A <- A[complete.cases(A$Geneid), ]
+  
+  Module_Genes_list[[a+1]] <- A
+  names(Module_Genes_list)[[a+1]] <- paste("GeneAnno",MODULE, sep="_")
+}
+
+Gene_counts <- list()
+for (i in names(Module_Genes_list)) {
+  a <- length(Gene_counts)
+  g <- sub("GeneAnno_ME", "", i)
+  A <- length(unique(na.omit(Module_Genes_list[[i]]$ENTREZID)))
+  B <- length(na.omit(Module_Genes_list[[i]]$Geneid))
+  C <- table(RNA_Gill_WGCNA$RNA_Gill_moduleLabels == g)[2]
+  
+  module_summary <- data.frame(Module = i, Module_Size = C, EnrezID = A)
+  Gene_counts[[a+1]] <- module_summary}
+print(do.call(rbind, Gene_counts))
+ 
+RNA_Gill_WGCNA$RNA_Gill_GeneAnno <- Module_Genes_list
+
+
+saveRDS(RNA_Gill_WGCNA, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Gill, "List_3", Date, sep="_"), ".rds", sep=""))))
+
+
+
+
+```
+
+# -
+
+# 4 RNAseq Liver 
+
+Individual Co-Expression networks
+
+## 4.1 Liver RNA Setup
+
+```{r,  message=FALSE,warning=FALSE}
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+#Read in the female liver data set
+
+set.seed(123)
+Species    <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "RNA"
+Tissue     <- "Liver"
+Analysis   <- "WGCNA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "RNAseq-"
+
+#####################
+Tissue <-   "Liver"
+variable <- "Replicates"
+#####################
+
+save_name_RNA_Liver <- paste(Species, Year,Season, Tissue, Type, Analysis, sep = "_")
+paste0(file.path(path_Output_WGCNA, paste(Analysis, "_", sep="")), save_name_RNA_Liver, ".RData")
+
+##################
+#Sample selection#
+##################
+cat(paste(shQuote(SAMDF_RNA_Liver$SampleID, type="cmd"), collapse=", ")) 
+
+# "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Liver_All<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3", "SLSU21MGEB4",  "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6",  "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Liver<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4", "SLSU21MGEB5", "SLSU21MGEB7",
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7",
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9",
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+#"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+#"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+```
+
+
+
+## 4.2 DESeq2
+
+```{r,  message=FALSE,warning=FALSE}
+Samples_RNA_Liver_List <- list("Samples_RNA_Liver_All" = Samples_RNA_Liver_All, "Samples_RNA_Liver"=Samples_RNA_Liver)
+
+WGCNA_RNA_Liver <- list()
+for (Livers in names(Samples_RNA_Liver_List)){
+
+  WGCNA_RNA_Liver[[Livers]] <- list()
+  
+  Samples <- Samples_RNA_Liver_List[[Livers]]
+  
+  SAMDF_RNA_Liver           <- SAMDF_RNA_Liver[SAMDF_RNA_Liver$SampleID %in% Samples,]
+
+  SAMDF_RNA_Liver  <-SAMDF_RNA_Liver %>% arrange(factor(rownames(SAMDF_RNA_Liver), levels = Samples))
+  rownames(SAMDF_RNA_Liver) <-SAMDF_RNA_Liver$SampleID
+
+#=====================================================================================
+# ExperimentalDesign & Filter
+#=====================================================================================
+  cnt_RNA_Liver    <- cnt_RNA_Liver[,SAMDF_RNA_Liver$SampleID] 
+
+  #ExperimentalDesign
+  library(DESeq2)
+  dds_RNA_Liver <- DESeqDataSetFromMatrix(countData = cnt_RNA_Liver,
+                              colData = SAMDF_RNA_Liver,
+                              design = ~ Replicates)
+  vst_RNA_Liver <- vst(dds_RNA_Liver, blind = FALSE)
+
+  ##################
+  # SampleDist PCAs#
+  ##################
+  vst_RNA_list <- list("vst_RNA_Liver" =vst_RNA_Liver)
+  for (i in names(vst_RNA_list)[grepl("vst", names(vst_RNA_list))]){
+    require(plyr)
+    require(ggrepel) 
+    require(cowplot)
+    if (OperatingSystem == "Mac" ) {
+       quartz() }
+    tryCatch({
+    g       <- paste(i) 
+    gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  RNA_vst_PCA_Liver <-pcaplotRK3(vst_RNA_list[[i]],intgroup = c("Replicates"), pcX = 1, pcY = 2, title="",
+                   ellipse = TRUE,     ellipse.prob = 0.5) +
+  scale_fill_manual(values=col.Palette$SL) + #col.Palette.SeqCenter #col.Palette.Cruises
+  scale_color_manual(values=col.Palette$SL) + atheme +
+  theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+  theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+  prow <- cowplot::plot_grid(RNA_vst_PCA_Liver, labels = c(""), ncol = 1)
+  title <- ggdraw() + draw_label_themeRKwhite(paste(Species,  gg, Type, Livers), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRKwhite(paste("vst-PCA", "with",       ... = 
+  length(rownames(vst_RNA_list[[i]])),"genes",sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0,   
+  vjust = 1)
+  RNA_vst_PCA_Liver<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0, 0.05, 0.989))
+  ggsave(RNA_vst_PCA_Liver, filename = paste(paste(save_name_RNA_Liver, "vst-PCA", Livers, sep="_"),".png", sep=""), path = pathPlots ,
+         device='png', dpi=300, width = 7,
+  height = 7)
+  plot(RNA_vst_PCA_Liver)
+  WGCNA_RNA_Liver[[Livers]]$RNA_vst_PCA_Liver <- RNA_vst_PCA_Liver
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+
+  #######################
+  ### 3.1.2 Clustering###
+  #######################
+
+  ########################################
+  # Get overview of normalized data#
+  # dds <- DESeq(dds)
+  # VST <- getVarianceStabilizedData(dds)
+  # rv_VST <- rowVars(VST)
+  # summary(rv_VST)
+  # q75_VST <- quantile( rowVars(VST), .75)  # <= original
+  # expr_normalized <- VST[ rv_VST > q75_VST, ]
+  # 
+  # expr_normalized_df <- data.frame(expr_normalized) %>%
+  #   mutate(Gene_id = row.names(expr_normalized)) %>% pivot_longer(-Gene_id)
+  # 
+  # expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  #   geom_violin() +
+  #   geom_point() +
+  #   theme_bw() +
+  #   theme(axis.text.x = element_text( angle = 90)) +
+  #   ylim(0, NA) +
+  #   labs(
+  #     title = "Normalized and 75 quantile Expression",
+  #     x = "treatment",y = "normalized expression")
+  ####################################################
+
+  #=====================================================================================
+  #  Code chunk 3
+  #=====================================================================================
+  library(WGCNA)
+  #rlog-Transformation
+  omics_data0 <-data.frame(t(assay(vst_RNA_Liver)))
+  a <- length(omics_data0)
+  gsg = goodSamplesGenes(omics_data0, verbose = 3);
+  gsg$allOK
+
+  #=====================================================================================
+  #  Code chunk 4
+  #=====================================================================================
+  if (!gsg$allOK) {
+    # Optionally, print the gene and sample names that were removed:
+    if (sum(!gsg$goodGenes)>0) 
+     print(paste("Removing genes"));
+    if (sum(!gsg$goodSamples)>0) 
+     print(paste("Removing samples:"));
+    # Remove the offending genes and samples from the data:
+    omics_data0 = omics_data0[gsg$goodSamples, gsg$goodGenes]
+  }
+  b <- length(omics_data0)
+
+  print(paste("genes before", a))
+  print(paste("genes before", b))
+  print(paste("genes before", b-a))
+
+  #=====================================================================================
+  #  Code chunk 5
+  #=====================================================================================
+  sampleTree = hclust(dist(omics_data0), method = "average");
+  # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+  # The user should change the dimensions if the window is too large or too small.
+  sizeGrWindow(12,9)
+  #pdf(file = "Plots/sampleClustering.pdf", width = 12, height = 9);
+  par(cex = 0.6);
+  par(mar = c(0,4,2,0))
+  plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5, 
+     cex.axis = 1.5, cex.main = 2)
+
+  #=====================================================================================
+  #  Code chunk 6
+  #=====================================================================================
+  # Plot a line to show the cut
+  abline(h = 100, col = "red");
+  # Determine cluster under the line
+  clust = cutreeStatic(sampleTree, cutHeight = 100, minSize = 10)
+  table(clust)
+  # clust 1 contains the samples we want to keep.
+  recordPlot() -> SampleClusteringTreePlot
+
+  #in Case we would exclude outliers from the tree: 
+  #keepSamples = (clust==1)
+  #omics_data0 = omics_data0[keepSamples, ]
+
+
+  #Keep all samples
+  omics_data = omics_data0
+  nGenes = ncol(omics_data)
+  nSamples = nrow(omics_data)
+
+  #=====================================================================================
+  #  Code chunk 7
+  #=====================================================================================
+
+  datTraits<-SAMDF_RNA_Liver[,traitData]
+  datTraits <- datTraits[rownames(datTraits) %in% rownames(omics_data),]
+  collectGarbage()
+
+  #=====================================================================================
+  #  Code chunk 8
+  #=====================================================================================
+  # Re-cluster samples
+  sampleTree2 = hclust(dist(omics_data), method = "average")
+  # Convert traits to a color representation: white means low, red means high, grey means missing entry
+  traitColors = numbers2colors(datTraits, signed = FALSE)
+  # Plot the sample dendrogram and the colors underneath.
+  plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits), 
+                    main = "Sample dendrogram and trait heatmap")
+  recordPlot() -> SampleClusteringTreeTraitsPlot
+
+  #=====================================================================================
+  #  Code chunk 9
+  #=====================================================================================
+
+  WGCNA_RNA_Liver[[Livers]]$omics_data <- omics_data
+  WGCNA_RNA_Liver[[Livers]]$datTraits  <- datTraits
+  WGCNA_RNA_Gill[[Livers]]$SAMDF_RNA_Liver  <-  SAMDF_RNA_Liver
+  WGCNA_RNA_Liver[[Livers]]$SampleClusteringTreePlot  <- SampleClusteringTreePlot
+  WGCNA_RNA_Liver[[Livers]]$SampleClusteringTreeTraitsPlot <- SampleClusteringTreeTraitsPlot
+}
+
+SAMDF_RNA_Liver <-WGCNA_RNA_Liver$Samples_RNA_Liver$SAMDF_RNA_Liver
+omics_data<- WGCNA_RNA_Liver$Samples_RNA_Liver$omics_data
+datTraits<- WGCNA_RNA_Liver$Samples_RNA_Liver$datTraits
+
+save(omics_data, datTraits, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "dataInput", Date, sep="_"), ".RData", sep=""))))
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(WGCNA_RNA_Liver$Samples_RNA_Liver_All$SampleClusteringTreePlot, WGCNA_RNA_Liver$Samples_RNA_Liver$SampleClusteringTreePlot, labels = c("A", "B"), rel_heights = c(1,1), rel_widths =  c(1,0.8), ncol = 2) -> part_1
+part_1
+cowplot::plot_grid(WGCNA_RNA_Liver$Samples_RNA_Liver_All$RNA_vst_PCA_Liver, WGCNA_RNA_Liver$Samples_RNA_Liver$RNA_vst_PCA_Liver, labels = c("C", "D"), rel_heights = c(1,1), rel_widths =  c(1,1), ncol = 2) -> part_2
+part_2
+cowplot::plot_grid(part_1, part_2, ncol = 1) -> part_3
+ggsave(part_3, filename = paste(paste(save_name_RNA_Liver, "SSU_DataInputPlot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 12)
+part_3
+```
+
+## 4.3 Network construction
+
+Soft Threshold
+Find the soft thresholding power beta to which co-expression similarity is raised to calculate adjacency,
+based on the criterion of approximate scale-free topology. 
+
+The general guidance for WGCNA and hdWGCNA is to pick the lowest soft power threshold that has a Scale Free Topology Model Fit greater than or equal to 0.8, so in this case we would select our soft power threshold as 9. Later on, the ConstructNetwork will automatically select the soft power threshold if the user does not provide one.
+
+#### 4.3.1 Pick Soft Threshold
+
+```{r,  message=FALSE,warning=FALSE}
+#=====================================================================================
+#  Code chunk 1
+#=====================================================================================
+# Load the WGCNA package
+library(WGCNA)
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+# Allow multi-threading within WGCNA. At present this call is necessary.
+# Any error here may be ignored but you may want to update WGCNA if you see one.
+# Caution: skip this line if you run RStudio or other third-party R environments.
+# See note above.
+#enableWGCNAThreads()
+# Load the data saved in the first part
+lnames = load(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "dataInput", Date, sep="_"), ".RData", sep=""))))
+#The variable lnames contains the names of loaded variables.
+lnames
+
+#=====================================================================================
+#  Code chunk 2
+#=====================================================================================
+#from Strand et al, 2021
+# Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+# Call the network topology analysis function
+  allowWGCNAThreads() #needed otherwise would not work! https://www.biostars.org/p/122349/
+  sft = pickSoftThreshold(omics_data, powerVector = powers, verbose = 5)
+  # Plot the results:
+  # Find the soft thresholding power beta to which co-expression similarity is raised to calculate adjacency.
+  # based on the criterion of approximate scale-free topology.
+  idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.90))
+  if(is.infinite(idx)){
+    idx <- min(which((-sign(sft$fitIndices[,3])*sft$fitIndices[,2]) > 0.80))
+    if(!is.infinite(idx)){
+      st <- sft$fitIndices[idx,1]
+      } else{
+     idx <- which.max(-sign(sft$fitIndices[,3])*sft$fitIndices[,2])
+      st <- sft$fitIndices[idx,1]
+    }
+  } else{st <- sft$fitIndices[idx,1]}
+  # Plot Scale independence measure and Mean connectivity measure
+
+  # Scale-free topology fit index as a function of the soft-thresholding power
+  data.frame(Indices = sft$fitIndices[,1],
+           sfApprox = -sign(sft$fitIndices[,3])*sft$fitIndices[,2]) %>% 
+    ggplot() + 
+    geom_hline(yintercept = 0.9, color = "red", alpha = 0.6) + # corresponds to R^2 cut-off of 0.9
+    geom_hline(yintercept = 0.8, color = "red", alpha = 0.2) + # corresponds to R^2 cut-off of 0.8
+    geom_line(aes(x = Indices, y = sfApprox), color = "red", alpha = 0.1, size = 2.5) +
+    geom_text(mapping = aes(x = Indices, y = sfApprox, label = Indices), color = "red", size = 4) +
+    ggtitle("Scale independence") +
+    xlab("Soft Threshold (power)") +
+    ylab("SF Model Fit,signed R^2") +
+    xlim(1,20) +
+    ylim(-1,1) +
+    geom_segment(aes(x = st, y = 0.25, xend = st, yend = sfApprox[idx]-0.05), 
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.5)-> scale_independence_plot 
+  
+# Mean connectivity as a function of the soft-thresholding power
+  data.frame(Indices = sft$fitIndices[,1],
+           meanApprox = sft$fitIndices[,5]) %>% 
+    ggplot() + 
+    geom_line(aes(x = Indices, y = meanApprox), color = "red", alpha = 0.1, size = 2.5) +
+    geom_text(mapping = aes(x = Indices, y = meanApprox, label = Indices), color = "red", size = 4) +
+    xlab("Soft Threshold (power)") +
+    ylab("Mean Connectivity") +
+    geom_segment(aes(x = st-0.4, 
+                   y = sft$fitIndices$mean.k.[idx], 
+                   xend = 0, 
+                   yend = sft$fitIndices$mean.k.[idx]),
+               arrow = arrow(length = unit(0.2,"cm")), 
+               size = 0.4) +
+    ggtitle(paste0("Mean connectivity: ", 
+                 round(sft$fitIndices$mean.k.[idx],2))) -> mean_connectivity_plot
+
+  si_mc_plot <- cowplot::plot_grid(scale_independence_plot, mean_connectivity_plot, ncol = 2, align = "h", labels = c("A", "B"))
+
+  si_mc_plot
+  ggsave(si_mc_plot, filename = paste(paste(save_name_RNA_Liver, "soft_thresholding_power", sep="_"),".png", sep=""), path = pathPlots,
+         device='png', dpi=300, width = 8, height = 6)
+
+softPower = st; print(paste("SoftPower chosen to", softPower))
+
+softPower <- 3
+```
+
+#### 4.3.2  blockwiseModules
+
+deepSplit integer value between 0 and 4. Provides a simplified control over how sensitive
+module detection should be to module splitting, with 0 least and 4 most sensitive.
+See cutreeDynamic for more details.
+
+```{r,  message=FALSE, warning=FALSE}
+##################
+#blockwiseModules#
+##################
+softPower = softPower; print(paste("SoftPower chosen to", softPower))
+
+#https://www.biostars.org/p/305714/
+#there is a problem with cor form stats and cor from WGCNA, restart R
+network = blockwiseModules(omics_data, 
+                       power = softPower,
+                       networkType = "signed", 
+                       TOMType = "signed",
+                       corType = "bicor",
+                       minModuleSize = 30, #for genes 30
+                       reassignThreshold = 0, 
+                       deepSplit = 2,
+                       mergeCutHeight = 0.25,
+                       numericLabels = TRUE, 
+                       pamRespectsDendro = FALSE,
+                       saveTOMs = TRUE,
+                       saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"), 
+                       verbose = 3)
+
+#Strand et., 2021
+# network <- blockwiseModules(omics_data,
+#                           power = st, 
+#                           networkType = "signed", 
+#                           TOMType = "signed",
+#                           corType = "bicor",
+#                           maxPOutliers = 0.05,
+#                           deepSplit = 4, # Default 2
+#                           minModuleSize = 2, # 30
+#                           minCoreKME = 0.5,      # Default 0.5
+#                           minCoreKMESize = 2,    # Default minModuleSize/3,
+#                           minKMEtoStay = 0.5,    # Default 0.3
+#                           reassignThreshold = 0, # Default 1e-6
+#                           mergeCutHeight = 0.4,  # Default 0.15
+#                           pamStage = FALSE, 
+#                           pamRespectsDendro = TRUE,
+#                           replaceMissingAdjacencies = TRUE,
+#                           numericLabels = TRUE,
+#                           saveTOMs = TRUE,
+#                           saveTOMFileBase = paste(Species,Tissue,Type,Season, "TOM", sep="_"),
+#                           verbose = 3)
+
+###########
+#Save Data#
+moduleLabels = network$colors
+moduleColors = labels2colors(network$colors)
+MEs = network$MEs;
+geneTree = network$dendrograms[[1]];
+save(MEs, moduleLabels, moduleColors, geneTree,
+     file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "networkConstruction-auto", Date, sep="_"), ".rds", sep=""))))
+
+lnames = load(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "networkConstruction-auto", Date, sep="_"), ".rds", sep=""))))
+
+RNA_Liver_WGCNA <- list("RNA_Liver_omics_data" = omics_data, 
+                       "RNA_Liver_datTraits"=datTraits,
+                       "RNA_Liver_MEs"=MEs,
+                       "RNA_Liver_moduleLabels"=moduleLabels,
+                       "RNA_Liver_moduleColors"=moduleColors,
+                       "RNA_Liver_geneTree"=geneTree)
+
+saveRDS(RNA_Liver_WGCNA, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "List", Date, sep="_"), ".rds", sep=""))))
+
+RNA_Liver_WGCNA <- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "List", Date, sep="_"), ".rds", sep=""))))
+```
+
+#### 4.3.3 Module & Network Visualization
+
+```{r,  message=FALSE,warning=FALSE, fig.width=15, fig.height=15}
+##############################
+#Number of ASV in each module#
+##############################
+as.data.frame(table(RNA_Liver_WGCNA$RNA_Liver_moduleLabels)) %>% 
+  dplyr::rename(Module = Var1, Size = Freq) %>%
+  dplyr::mutate(Module_color = labels2colors(as.numeric(as.character(Module)))) -> module_size
+module_size %>% 
+  ggplot(aes(x = Module, y = Size, fill = Module)) +
+  geom_col(color =  "#000000") +
+  ggtitle("Number of genes in each module") +
+  theme(legend.position = "none") + 
+  scale_fill_manual(values = setNames(module_size$Module_color,module_size$Module)) +
+  geom_text(aes(label = Size),vjust = 0.5, hjust = -0.18, size = 3.5) +
+  ylim(0, max(module_size$Size)*1.1) +
+  theme(plot.margin = margin(2, 2, 2, 2, "pt")) +
+  coord_flip() -> RNAModuleSizePlot
+
+RNAModuleSizePlot
+ggsave(RNAModuleSizePlot, filename = paste(paste(save_name_RNA_Liver, "RNAModulePlot", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+#######################################
+#Module-Eigenegene-Correlation-Heatmap#
+#######################################
+MEs_R <- bicor(MEs, MEs, maxPOutliers = 0.05)
+idx.r <- which(rownames(MEs_R) == "ME0")
+idx.c <- which(colnames(MEs_R) == "ME0")
+MEs_R_noME0 <- MEs_R[-idx.r, -idx.c]
+
+MEs_R_noME0[upper.tri(MEs_R_noME0)] %>% 
+  as.data.frame() %>% 
+  dplyr::rename("correlation" = ".") %>% 
+  ggplot(aes(x=correlation)) + 
+  geom_histogram(bins = 20) +
+  #geom_density() + 
+  xlim(-1, 1) +
+  ggtitle(paste0(prefix,"ME correlation\n w/o ",prefix ,"ME0")) -> MEs_R_density
+MEs_R_density
+
+pheatmap::pheatmap(MEs_R_noME0, color = colorRampPalette(c("Blue", "White", "Red"))(100),
+                   silent = T, 
+                   breaks = seq(-1,1,length.out = 101),
+                   treeheight_row = 5, 
+                   treeheight_col = 5,
+                   main = paste0(prefix,"ME correlation heatmap w/o ",prefix ,"ME0"),
+                   labels_row = paste0(prefix, rownames(MEs_R)),
+                   labels_col = paste0(prefix, colnames(MEs_R))) -> MEs_R_Corr
+
+ggsave(MEs_R_Corr, filename = paste(paste(save_name_RNA_Liver, "MEs_R_Corr", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+cowplot::plot_grid(MEs_R_density, MEs_R_Corr$gtable, labels = c("D", "E"), rel_widths = c(0.6, 1)) -> density_eigen
+
+
+
+#######################
+#Network-Visualization# Takes to long for knitting
+#######################
+# 5 Visualization of networks within R
+# 5.a Visualizing the gene network
+# One way to visualize a weighted network is to plot its heatmap, Fig. 1. Each row and column of the heatmap
+# correspond to a single gene. The heatmap can depict adjacencies or topological overlaps, with light colors denoting
+# low adjacency (overlap) and darker colors higher adjacency (overlap). In addition, the gene dendrograms and module
+# colors are plotted along the top and left side of the heatmap. The package provides a convenient function to create
+# such network plots; Fig. 1 was created using the following code. This code can be executed only if the network
+# was calculated using a single-block approach (that is, using the 1-step automatic or the step-by-step tutorials). If
+# the networks were calculated using the block-wise approach, the user will need to modify this code to perform the
+# visualization in each block separately. The modi cation is simple and we leave it as an exercise for the interested
+# reader.
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+
+# dissTOM = 1-TOMsimilarityFromExpr(omics_data, power = softPower);
+# # Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+# plotTOM = dissTOM^10;
+# # Set diagonal to NA for a nicer plot
+# diag(plotTOM) = NA;
+# # Call the plot function
+# TOMplot(plotTOM, geneTree, moduleColors, main = "Network heatmap plot, all genes")
+
+#############################
+# Correlation within modules# from Strand et al, 2021
+#############################
+
+corr_within_module <- function(omics_data, network, module_x = 1){
+  idx.omics_data <- which(network$colors == module_x)
+  idx.me <- which(colnames(network$MEs) == paste0("ME",module_x))
+  kME_x <- bicor(omics_data[,idx.omics_data], network$MEs[,idx.me], maxPOutliers = 0.05)
+  kME_x}
+ggplot.list <- list()
+for(m in colnames(network$MEs)){
+  h <- as.numeric(sub("ME","", m))
+  data.frame(x = suppressWarnings(corr_within_module(omics_data = omics_data, network = network, module_x = h))) %>% 
+    ggplot() + 
+    geom_histogram(aes(x), fill = labels2colors(h), color = "black", alpha = 0.5, bins = 20) + 
+    xlim(-1, 1) +
+    xlab("ASV correlation")+
+    ggtitle(paste0(prefix,m)) -> da_plot
+  ggplot.list[[m]] <- da_plot}
+ggplot.list <- ggplot.list[ggplot.list %>% names() %>% sub("ME", "", .) %>% as.numeric() %>% order()]
+
+cowplot::plot_grid(plotlist = ggplot.list, ncol = 3) -> density_all_plot
+density_all_plot
+
+ggsave(density_all_plot, filename = paste(paste(save_name_RNA_Liver, "WithinModuleCorrelation", sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 20)
+
+
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(si_mc_plot, RNAModuleSizePlot, labels = c("","C"), ncol = 2) -> part_1
+cowplot::plot_grid(part_1, density_eigen, labels = c("", ""), ncol = 1, rel_widths = c(1,1)) -> part_2
+ggsave(part_2, filename = paste(paste(save_name_RNA_Liver, "RNA_Liver_Network", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,
+  height = 8)
+part_2
+```
+
+## 4.4 Module-Trait-Correlation Heatmap
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=10}
+###################
+#Self made Heatmap#
+###################
+#https://bioinformaticsworkbook.org/tutorials/wgcna.html#gsc.tab=0
+# Define numbers of genes and samples
+MEs = orderMEs(RNA_Liver_WGCNA$RNA_Liver_MEs)
+names(MEs) = names(MEs) %>% gsub("ME","", .)  %>% paste("RNA",., sep="")
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+textMatrix <- paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) <- dim(moduleTraitCor)
+
+# Add treatment names
+MEs$treatment = row.names(MEs)
+mat <- as.data.frame(t(moduleTraitCor))
+mat$traits <- rownames(mat)
+# tidy & plot data
+module_order = names(MEs) 
+
+mME = mat %>%
+  pivot_longer(-traits) %>%
+  mutate(#name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+
+textMatrixLong <-  as.data.frame(t(signif(moduleTraitCor, 2)))
+textMatrixLong$traits <- rownames(textMatrixLong)
+textMatrixLong = textMatrixLong %>%
+  pivot_longer(-traits) %>%
+  mutate(
+    #name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong <- as.data.frame(textMatrixLong)
+
+textMatrixLong2 <-  as.data.frame(t(signif(moduleTraitPvalue, 1)))
+textMatrixLong2$traits <- rownames(textMatrixLong2)
+textMatrixLong2 = textMatrixLong2%>%
+  pivot_longer(-traits) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order))
+textMatrixLong2 <- as.data.frame(textMatrixLong2)
+
+## add gene counts per module
+ genesmod<- as.data.frame(moduleLabels)
+ genesmod$genes <- rownames(genesmod)
+ genesmod$Modules <- paste("RNA",genesmod$moduleLabels, sep="") #labels2colors(genesmod$moduleLabels)
+ 
+ModCount <- as.data.frame(genesmod %>% 
+  dplyr::group_by(Modules) %>% 
+  dplyr::summarise(n = n()) )
+ModCount <- ModCount[order(as.numeric(ModCount$n), decreasing = T),]
+
+
+HM <- mME %>% ggplot(., aes(x=traits, y=name, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "steelblue1",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+ggsave(A, filename = paste(paste(save_name_RNA_Liver, "WGCNA-ModuleHeatmap", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8, height = 6)
+
+      
+      
+mME<- mME%>% mutate(Category = case_when((traits %in% c(
+"O2",         
+"Salinity",    
+"SecchiDepth"
+)) ~ "Abiotics", 
+(traits %in% c(
+"FultonK", 
+"Length",
+"Weight",
+"StomachContent",
+"HSI",              
+"SSI")) ~ "Physiology")); Order<- c("Abiotics", "Physiology")
+ 
+HM <- mME %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+  geom_tile() +
+    scale_fill_gradientn(
+      colours = c("steelblue1", "white", "red"),
+      limit = c(-1,1), 
+      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+  scale_x_discrete(limits=ModCount$Modules, labels=paste(ModCount$Modules, ": ", ModCount$n)) +
+  facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr") +
+  geom_text(aes(label=textMatrixLong$value), position=position_nudge(y=0.2), 
+                      size=2.5, colour="grey20") +
+  geom_text(aes(label=paste0("(",textMatrixLong2$value,")")), position=position_nudge(y=-0.2), 
+                      colour="grey20", size=2.5) +
+   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+      
+ggsave(A, filename = paste(paste(save_name_RNA_Liver, "WGCNA-ModuleHeatmap-2", Date, sep="_"),".png", sep=""), path = pathPlots, device='png', dpi=300, width = 13, height = 7) 
+      
+
+##################
+#Specific Modules#
+##################
+ #  Module <- "steelblue"
+ #  HM <- mME[mME$name == Module,] %>% ggplot(., aes(x=name, y=factor(traits, levels=traitData), fill=value)) +
+ #  geom_tile() +
+ #    scale_fill_gradientn(
+ #      colours = c("steelblue1", "white", "red"),
+ #      limit = c(-1,1),
+ #      values = scales::rescale(c(-1, -0.3, 0, 0.3, 1))) +
+ #  # scale_fill_gradient2(
+ #  #   low = "steelblue1",
+ #  #   high = "red",
+ #  #   mid = "white",
+ #  #   midpoint = 0,
+ #  #   limit = c(-1,1))
+ #  #facet_grid(factor(mME$Category, levels=Order), scales = "free", space = "free") +
+ #  theme(axis.text.x = element_text(angle=90)) +
+ #  labs(title = "", y = "Modules", fill="corr") +
+ #  geom_text(aes(label=textMatrixLong[textMatrixLong$name == Module,]$value), position=position_nudge(y=0.2),
+ #                      size=3, colour="grey20") +
+ #  geom_text(aes(label=paste0("(",textMatrixLong2[textMatrixLong2$name == Module,]$value,")")), position=position_nudge(y=-0.2),
+ #                      colour="grey20", size=3) +
+ #   theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+ #      theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank())
+ #      prow <- cowplot::plot_grid(HM, labels = c(""), ncol = 1)
+ # A<- plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+ #      plot(A)
+ #      ggsave(A, filename = paste("WGCNA-ModuleHeatmap", Module, sep="_"), path = pathPlots,
+ #             device='png', dpi=300, width = 2.8,height = 7)
+```
+
+## 4.6 Dataframe Module-Genes
+
+```{r,  message=FALSE,warning=FALSE}
+RNA_Liver_WGCNA<- readRDS(file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "List", Date, sep="_"), ".rds", sep=""))))
+
+InterestingComparison <- RNA_Liver_WGCNA$RNA_Liver_MEs
+Module_Genes_list <- list()
+for (MODULE in names(InterestingComparison)) {
+  a <- length(Module_Genes_list)
+  ExpressionSet <- RNA_Liver_WGCNA$RNA_Liver_omics_data
+  moduleLabels  <- RNA_Liver_WGCNA$RNA_Liver_moduleLabels
+  Annotations   <- SLUCGeneManual
+  
+  genes_of_interest <- as.data.frame(names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))]))
+  print(head(names(ExpressionSet[moduleLabels == paste(sub("ME", "", MODULE))])))
+  colnames(genes_of_interest) <- "rowname"
+  print(paste("Module genes before Conversion to EntrezIDs"))
+  print(paste(MODULE, dim(genes_of_interest)[1]))
+  
+  ########################################
+  #Add annotated Gene-Names to omics data#
+  ########################################
+  #print(paste("Lost by double dot to dot conversion somwhere in the pipeline"))
+  #print(genes_of_interest$rowname[genes_of_interest$rowname %in% SLUCGeneManual$rowname == FALSE])
+  
+  AnnotationDbi_genes  <-dplyr::left_join(genes_of_interest, SLUCGeneManual)
+  AnnotationDbi_genes$GeneSymbolHS <- AnnotationDbi_genes$Human_SYMBOL_Manual
+  AnnotationDbi_genes2  <- as.data.frame(AnnotationDbi_genes$Human_SYMBOL_Manual)
+  colnames(AnnotationDbi_genes2) <- "GeneSymbolHS"
+  library(org.Hs.eg.db)
+  HS<-AnnotationDbi::select(org.Hs.eg.db, AnnotationDbi_genes2$GeneSymbolHS, "ENTREZID","SYMBOL") #Get EntrezIDs from Symbol
+  #CHECK!#
+  subset(HS, is.na(HS$ENTREZID))
+  dim(subset(HS, is.na(HS$ENTREZID)))
+  AnnotationDbi_genes2 <- dplyr::left_join(AnnotationDbi_genes2, HS, by=c("GeneSymbolHS" = "SYMBOL"))
+  dedup_ids = AnnotationDbi_genes2[!duplicated(AnnotationDbi_genes2[c("ENTREZID")]),]
+  dedup_ids <- dedup_ids[!is.na(dedup_ids$ENTREZID),]
+  print(paste("Module genes After Conversion to EntrezIDs"))
+  print(paste(MODULE, dim(dedup_ids)[1]))
+  #print(head(dedup_ids))
+  A<- dplyr::left_join(AnnotationDbi_genes[c("Geneid", "GeneSymbolHS")], dedup_ids)
+  A <- A[complete.cases(A$Geneid), ]
+  
+  Module_Genes_list[[a+1]] <- A
+  names(Module_Genes_list)[[a+1]] <- paste("GeneAnno",MODULE, sep="_")
+}
+
+Gene_counts <- list()
+for (i in names(Module_Genes_list)) {
+  a <- length(Gene_counts)
+  g <- sub("GeneAnno_ME", "", i)
+  A <- length(unique(na.omit(Module_Genes_list[[i]]$ENTREZID)))
+  B <- length(na.omit(Module_Genes_list[[i]]$Geneid))
+  C <- table(RNA_Liver_WGCNA$RNA_Liver_moduleLabels == g)[2]
+  
+  module_summary <- data.frame(Module = i, Module_Size = C, EnrezID = A)
+  Gene_counts[[a+1]] <- module_summary}
+print(do.call(rbind, Gene_counts))
+ 
+RNA_Liver_WGCNA$RNA_Liver_GeneAnno <- Module_Genes_list
+
+
+saveRDS(RNA_Liver_WGCNA, file = paste0(file.path(path_Output_WGCNA, paste(paste(save_name_RNA_Liver, "List_3", Date, sep="_"), ".rds", sep=""))))
+
+```
+
+#- 

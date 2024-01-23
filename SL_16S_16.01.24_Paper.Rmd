@@ -1,0 +1,1914 @@
+---
+title: "SL-16S-16.01.24"
+output: html_document
+date: "2024-01-16"
+---
+
+# 1 Global Setup 
+
+## 1.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r}
+GitClonePath <- "/Users/admin/Desktop/ElbeEstuarineZander"
+setwd(GitClonePath)
+```
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Input files from SL_Linux pipeline and addional Blasts
+path_Input_16S <-  paste(GitClonePath, "SL_Input_16S", sep="/")
+path_Input_RNA <- paste(GitClonePath, "SL_Input_RNA", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "SL_Output_16S", sep="/")
+path_Output_RNA     <- paste(GitClonePath, "SL_Output_RNA", sep="/")
+path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
+```
+
+## 1.2 Packages
+
+```{r}
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+#install.packages("packrat")
+#packrat::init()
+#packrat::snapshot()
+#packrat::restore()
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "AnnotationDbi", 
+#   "AnnotationHub", 
+#   "Biobase", 
+#   "GSEABase", 
+#   "DECIPHER", 
+#   "ComplexHeatmap", 
+#   "Biostrings", 
+#   "BiocParallel", 
+#   "BiocNeighbors", 
+#   "BiocFileCache", 
+#   "BiocBaseUtils", 
+#   "GO.db", 
+#   "GOSemSim", 
+#   "ShortRead", 
+#   "SummarizedExperiment", 
+#   "TreeSummarizedExperiment", 
+#   "phyloseq", 
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "DESeq2",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   "clusterProfiler", 
+#   "GenomeInfoDbData"
+#   ), force =T)
+```
+
+Most of the packages needed here are stored in the packrat::restore
+
+
+```{r, setup, message=FALSE, warning=FALSE, include=FALSE}
+#install.packages("adespatial")
+#install.packages("ggVennDiagram")
+```
+
+## 1.2 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the SL_Functions.rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("SL_Functions_16.01.24_Paper.Rmd")
+```
+
+## 1.4 Input Files
+
+```{r, message=FALSE, warning=FALSE}
+#########################
+#Read DADA2 Output files#
+taxa  <-readRDS(file.path(path_Input_16S, "SL_04.01.2024_Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "SL_04.01.2024_seqtab.nochim.rds"))
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Batch2-15.09.23_470_Track_reads_through_pipeline.csv"))
+
+########################################################################
+#Import samplefile and filter for samples with successful 16S sequencing
+SAMDF<- read.table(file=file.path(path_Input_RNA, "SL_samplefile_04.01.2024.csv") ,sep=";",dec = ".")
+# Get all IDs present
+SAMDF16S<-dplyr::filter(SAMDF, DNA16S == "yes") 
+rownames(SAMDF16S) <- SAMDF16S$SampleID
+```
+
+## 1.5 Tutorials
+
+```{r, message=FALSE, warning=FALSE,  include=FALSE}
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html#co-occur
+
+#NEW Works on summarized Expderiments
+#https://microbiome.github.io/OMA/differential-abundance.html#differential-abundance-analysis
+
+#Bioconductor by Callahan
+#https://bioconductor.org/help/course-materials/2017/BioC2017/Day1/Workshops/Microbiome/MicrobiomeWorkflowII.html#hierarchical_multiple_testing
+
+#Microbiome seq
+#https://userweb.eng.gla.ac.uk/umer.ijaz/projects/microbiomeSeq_Tutorial.html
+#https://userweb.eng.gla.ac.uk/umer.ijaz/bioinformatics/ecological.html
+
+#Olberding
+#https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+
+#Nice DESEQ2
+#https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+
+#CAP Plot
+#https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+```
+
+#-
+
+# 2 Phyloseq
+
+```{r, message=FALSE, warning=FALSE}
+#Create a phyloseq object from Dada2 Output
+library(tidyverse)
+taxa  <-readRDS(file.path(path_Input_16S, "SL_04.01.2024_Taxa_Species.rds"))
+seqtab.nochim <-  readRDS(file.path(path_Input_16S, "SL_04.01.2024_seqtab.nochim.rds"))
+
+taxa<-as.matrix(taxa)
+library(phyloseq)
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+tax_table(taxa))
+
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+head(sample_names(ps))
+
+ReadNum1 <-  read.csv2(file.path(path_Input_16S, "Batch1-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum2 <-  read.csv2(file.path(path_Input_16S, "Batch1-Reseq-31.07.23_470_Track_reads_through_pipeline.csv"))
+ReadNum3 <-  read.csv2(file.path(path_Input_16S, "Batch2-15.09.23_470_Track_reads_through_pipeline.csv"))
+
+ReadNum <- rbind(ReadNum1, ReadNum2, ReadNum3)
+ReadNum<-ReadNum[,c("X", "input")]
+colnames(ReadNum)<-c("SampleID", "Input")
+ReadNum <- ReadNum %>%
+  dplyr::group_by(SampleID) %>%
+  dplyr::summarise(Input = sum(Input))
+nonchim <- as.data.frame(rowSums(otu_table(ps)))
+names(nonchim) <- "nonchim"
+ReadNum<- dplyr::left_join(rownames_to_column(nonchim), ReadNum, by=c("rowname" = "SampleID"))
+colnames(ReadNum)<-c("SampleID", "nonchim", "Input")
+rownames(ReadNum) <- ReadNum$SampleID
+
+OTU <- otu_table(ps)
+TAX <- tax_table(ps) 
+REFSEQ <- refseq(ps)
+ps <- phyloseq(otu_table(OTU, taxa_are_rows=FALSE), 
+               sample_data(ReadNum), tax_table(TAX), refseq(REFSEQ))
+
+rowSums(otu_table(ps))
+sample_names(ps)
+sample_names(ps)[sample_names(ps) == "Elbe915"] <- "WFSU21MGEB"
+sample_names(ps)[sample_names(ps) == "Elbe917"] <- "WFSU21BBEB"
+
+rowSums(otu_table(ps))
+sample_names(ps)
+
+saveRDS(ps, file.path(path_Output_16S, "SL_ps_16S_merge_17.01.24.rds"))
+```
+
+# -
+
+# 3 Analysis
+
+### 3.1 Setup Analysis
+
+```{r, message=FALSE, warning=FALSE}
+#Date of the Analysis for save-names#
+Date <- "16.01.2024"
+set.seed(123)
+Species    <- "SL"
+Tissue     <- "Gill"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "16S"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+prefix <- "SSU-"
+#Differential Abundance Testing
+#####################
+variable = Comparisons = "Replicate2"
+#####################
+VariableOrder<-c("SLSU21MG","SLSU21BB", "SLSU21SS", "SLSU21ML", "WF")
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Muehlenberger Loch")
+save_name <- paste(Species,Year,Season,sep = "_")
+#Check your Output: 
+paste0(file.path(path_Output_16S, "DAT_"), save_name, ".RData")
+
+SL_SSU_Samples<-c(
+"WFSU21MGEB", "WFSU21BBEB", "WFSU21SSFL", "WFSU21MLFL",
+"SLSU21MGEB1","SLSU21MGEB2","SLSU21MGEB3","SLSU21MGEB4","SLSU21MGEB5","SLSU21MGEB7",
+"SLSU21BBEB1","SLSU21BBEB2","SLSU21BBEB4","SLSU21BBEB6","SLSU21BBEB7","SLSU21BBEB9",
+"SLSU21SSEB2","SLSU21SSEB3","SLSU21SSEB5","SLSU21SSEB6","SLSU21SSEB7","SLSU21SSEB9",
+"SLSU21MLEB1","SLSU21MLEB2","SLSU21MLEB5","SLSU21MLEB6","SLSU21MLEB7","SLSU21MLEB9")
+
+SAMDF16S$Reps <- sub("SLSU21", "", SAMDF16S$Replicate2)  
+    RepOrder <-c("MG-713","BB-692", "SS-665", "ML-633", "WF")
+    SAMDF16S$Reps<-ifelse(SAMDF16S$Reps == "MG", "MG-713",
+                        ifelse(SAMDF16S$Reps == "BB", "BB-692",
+                               ifelse(SAMDF16S$Reps == "SS", "SS-665",
+                                      ifelse(SAMDF16S$Reps == "ML", "ML-633", "WF"))))
+
+SAMDF16S$LOC<-ifelse(SAMDF16S$Loc == "Medem Grund", "MG-713",
+                      ifelse(SAMDF16S$Loc == "Brunsbuettel", "BB-692",
+                          ifelse(SAMDF16S$Loc == "Schwarztonnen Sand", "SS-665",
+                              ifelse(SAMDF16S$Loc == "Muehlenberger Loch", "ML-633", NA))))
+    
+```
+
+#### 3.1.1 Create Color Code
+
+```{r, message=FALSE, warning=FALSE}
+phylum_colors <- c("Actinobacteriota"  = "red", 
+          "Cyanobacteria"     = "green", 
+          "Bacteroidota"      = "darkgreen",
+          "Proteobacteria"    = "darkorange", 
+          #"Patescibacteria"  = "pink", 
+          "Acidobacteriota "  = "pink",
+          "Planctomycetota"   = "purple", 
+          "Verrucomicrobiota" = "blue", 
+          "Chloroflexota"     = "cyan",
+          "Deinococcota"      = "#FFFF00",
+          "Gemmatimonadota"   = "#8F7C00",  
+          "Other" = "grey20")
+
+generate_shades <- function(base_color, num_variations) {
+    color_ramp <- colorRampPalette(c(base_color, "white"))
+    # Generate a vector of colors
+    colors <- color_ramp(num_variations+1)
+    # Create a data frame with the colors
+    color_palette <- colors[1:(length(colors) - 1)]
+    return(color_palette)}
+```
+
+## 3.2 Filter ASVs 
+
+```{r, message=FALSE, warning=FALSE}
+#https://github.com/joey711/phyloseq/issues/574
+require(phyloseq)
+require(dada2)
+require(tidyverse)
+head(as.data.frame(rowSums(otu_table(ps))))
+
+pslistraw <- list("ps" = ps)
+for (i in names(pslistraw)[grepl("ps", names(pslistraw))]){
+    ps <- pslistraw[[i]]
+    g <- names(pslistraw[i])
+    A = data.frame(sample_data(ps))
+    A<-A %>% mutate(Run =case_when(
+    A$SampleID %in% c(ReadNum2$X) ~ "Batch1_Run1merge",
+    A$SampleID %in% c(ReadNum3$X) ~ "Batch2"))
+    #PHY <-phy_tree(ps)
+    OTU <- otu_table(ps, taxa_are_rows=FALSE)
+    TAX <- tax_table(ps)
+    REFSEQ <- refseq(ps)
+    pslistraw[[i]] <- phyloseq(otu_table(OTU, taxa_are_rows=FALSE), 
+               sample_data(A), tax_table(TAX), refseq(REFSEQ)) #, phy_tree(PHY)
+}
+
+ps_WF <-prune_samples(sample_names(pslistraw$ps)[grepl("WF", sample_names(pslistraw$ps))], pslistraw$ps)
+ps_SL_21 <- prune_samples(sample_names(pslistraw$ps)[grepl("SLSU21MG|SLSU21BB|SLSU21SS|SLSU21ML", sample_names(pslistraw$ps))], pslistraw$ps)
+ps_SLWF_21 <- prune_samples(sample_names(pslistraw$ps)[grepl("SLSU21MG|SLSU21BB|SLSU21SS|SLSU21ML|WFSU21", sample_names(pslistraw$ps))], pslistraw$ps)
+
+pslistraw<- list("ps_WF" = ps_WF,"ps_SL_21" = ps_SL_21, "ps_SLWF_21" = ps_SLWF_21)
+
+###########
+#Save Data#
+###########
+saveRDS(pslistraw, file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+
+#########################
+#Adding real sample data#
+#########################
+for (i in names(pslistraw)[grepl("ps_WF|ps_SL_21|ps_SLWF_21", names(pslistraw))]){
+    ps_SAMDF <- pslistraw[[i]]
+    g<- i; print(g)
+
+    A<-SAMDF16S[rownames(SAMDF16S) %in% rownames(sample_data(ps_SAMDF)),]
+    B <-dplyr::left_join(A, sample_data(ps_SAMDF))
+    rownames(B) <- B$SampleID
+    B <-phyloseq::sample_data(B)
+
+    #PHY <-phy_tree(ps)
+    OTU <- phyloseq::otu_table(ps_SAMDF, taxa_are_rows=FALSE)
+    TAX <- phyloseq::tax_table(ps_SAMDF)
+    REFSEQ <- refseq(ps_SAMDF)
+    pslistraw[[i]] <- phyloseq(OTU, TAX, B, REFSEQ) #, phy_tree(PHY)
+}
+
+
+
+
+applied_filter <- 0.005
+print(paste("The Filtering Abundance is", applied_filter, "%"))
+ 
+pslist <- pslistraw
+  for (i in names(pslist)[grepl("ps", names(pslist))]){
+    require(cowplot)
+    require(phyloseq)
+    require(ggplot2)
+    tryCatch({
+    ps <- pslist[[i]]
+    g<- names(pslist[i])
+    ###### Pre-Filtering Step 1: Remove all not bacteria
+    table(tax_table(ps)[, "Phylum"], exclude = NULL)
+    ps_Filter <- ps %>%
+    prune_taxa(taxa_sums(.) > 0, .) # prune OTUs that are not present in at least one sample
+    ps_Filter1 <- ps_Filter %>% #Filter everything that is not bacteria
+    subset_taxa(
+    Kingdom == "Bacteria" &
+    Family  != "mitochondria" &
+    Class   != "Chloroplast")
+
+    A<-as.data.frame(rowSums(otu_table(ps)))
+    B<-as.data.frame(rowSums(otu_table(ps_Filter1)))
+    #100 - B / A  #We loose reads by the merge steps
+    print("We loose reads by Chloroplast & Mitochondria removal")
+    print((B - A)/A*100)
+    
+    # WFAUT21TWEB_batch2                    -33.7557466
+    # WFSU21BBEB_batch2                     -21.4285714
+    # OESP22MLFL3                            -5.6184486
+    # GCSU21SSEB8_batch2                     -4.3464177
+
+    ###### Pre-Filtering Step 2: Remove all uncharacterized
+    ps_Filter2 <- subset_taxa(ps_Filter1, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+    ps_Filter2
+    table(tax_table(ps_Filter2)[, "Phylum"], exclude = NULL)
+
+    ###### Pre-Filtering Step 3: Glom to species level
+    #ps_Filter_glom = tax_glom(ps_Filter2, "Species", NArm = FALSE) 
+    #head(tax_table(ps_Filter_glom))
+    #following http://mixomics.org/mixmc/mixmc-preprocessing/
+    #Arumugam et al., (2011)
+
+    
+    low.count.removal <- function(
+                        data, # OTU count df of size n (sample) x p (OTU)
+                        percent=0.005 # cutoff chosen
+                        ) {
+    keep.otu = which(colSums(data)*100/(sum(colSums(data))) > percent)
+    data.filter = data[,keep.otu]
+    return(list(data.filter = data.filter, keep.otu = keep.otu))}
+
+    #######################################################
+    #Plot consequence of filtering from Strand et al, 2021#
+    #######################################################
+    frac_zero <- c()
+    all_sum   <- c()
+    num_otu   <- c()
+    seqp <- seq(0,0.1,0.0001)
+    for(i in seqp){
+      result.filter = low.count.removal(otu_table(ps_Filter2), percent=i)
+      length(result.filter$keep.otu)
+      otu.f = result.filter$data.filter
+      frac_zero <- c(frac_zero, sum(otu.f == 00)/ (ncol(otu.f)*nrow(otu.f)))
+      all_sum <- c(all_sum, sum(otu.f))
+      num_otu <- c(num_otu, ncol(otu.f))
+    }
+    names(frac_zero) <- seqp
+    names(all_sum) <- seqp
+
+    # Get all_sum and num_otu to a fraction of the total
+    mas <- max(all_sum)
+    mno <- max(num_otu)
+
+    all_sum %>% (function(x){x/max(x)}) -> all_sum
+    num_otu %>% (function(x){x/max(x)}) -> num_otu
+    data.frame(filter = seqp, 
+           Percent.zeros   = frac_zero*100, 
+           Total.abundance = all_sum*100, 
+           Number.of.OTUs  = num_otu*100) %>% 
+    tidyr::gather(key = "Type", value = "percent.of.total", -filter) %>%
+    ggplot() + 
+    geom_line(mapping = aes(x = filter, y = percent.of.total, col = Type)) +
+    geom_vline(xintercept = applied_filter, alpha = 0.5, color = "red", linetype="dashed")+
+    ylab("Percent of total") +
+    xlab(paste("Filter at", applied_filter)) +
+    theme(legend.title = element_blank()) -> FilterZerosPlot
+
+    plot(FilterZerosPlot)
+    ########################
+    # remove low count OTUs#
+    ########################
+    result.filter <- low.count.removal(otu_table(ps_Filter2), percent=applied_filter) 
+    data.filter <- result.filter$data.filter
+    length(result.filter$keep.otu) # check how many OTUs remain
+
+    ps_Filter3 <- prune_taxa(names(result.filter$keep.otu), ps_Filter2)
+
+    tail(t(otu_table(ps_Filter3)))
+    table(rowSums(t(otu_table(ps_Filter3))))
+
+    ###### Pre-Filtering Step 4: Add best taxonomy to ASV
+    ps_Filter_ASV_besttax<- add_besthit(ps_Filter3, sep=":")
+
+    ###### Excluding samples with low sequencing depth
+    #Check sample depths
+    print(sample_sums(ps_Filter))
+    print(sample_sums(ps_Filter_ASV_besttax))
+
+    ###### Pre-Filtering Step 5: Remove low frequency Samples
+    print(paste("Samples removed for low frequency below 1000 seqs in;", g, sep = ""))
+    print(which(!rowSums(otu_table(ps_Filter_ASV_besttax)) > 1000))
+    #WFSU21BBFL WFSU21MGFL WFSU22OSEB WFWI22MLEB WFWI22SSEB WFSU21BBEB WFSU21MGEB WFSU21MLEB WFSU21SSEB 
+    #   156        157        161        167        169        305        306        307        308 
+    head(rowSums(otu_table(ps_Filter_ASV_besttax)))
+    library(phyloseq)
+    ps_Filter_ASV_besttax_Samples <- prune_samples(rowSums(otu_table(ps_Filter_ASV_besttax)) > 1000,
+                                                            ps_Filter_ASV_besttax) 
+    
+    ps_Filter_ASV_besttax_Samples <- ps_Filter_ASV_besttax_Samples %>% prune_taxa(taxa_sums(.) > 0, .) 
+    #ps_Filter_ASV_besttax_Samples <- filter_taxa(ps_Filter_ASV_besttax_Samples, function (x) {sum(x > 0) > 1},
+    #                                 prune=TRUE) 
+    saveRDS(ps_Filter_ASV_besttax_Samples, file.path(path_Output_16S,paste(g, paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+  
+ps_WF      <- readRDS(file.path(path_Output_16S, paste("ps_WF", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_SL_21   <- readRDS(file.path(path_Output_16S, paste("ps_SL_21", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+ps_SLWF_21 <- readRDS(file.path(path_Output_16S, paste("ps_SLWF_21", paste(paste("Filter_ASV_besttax_16S", Date, sep="_"), ".rds", sep=""), sep="_")))
+                      
+pslist<- list("ps_WF" = ps_WF, "ps_SL_21" = ps_SL_21, "ps_SLWF_21" = ps_SLWF_21)
+
+for (i in names(pslist)[grepl("ps", names(pslist))]){
+  g <- paste(i)
+  a <- length(pslist)
+  ps <- pslist[[i]]
+  ps_clr <- microbiome::transform(ps, "clr")
+  pslist[[a+1]] <- ps_clr
+  names(pslist)[[a+1]] <- paste("clr", sub("ps", "\\1", g), sep="")}
+
+for (i in names(pslist)[grepl("clr", names(pslist))]){
+  g <- paste(i)
+  a <- length(pslist)
+  clr <- pslist[[i]]
+  TSE<-mia::makeTreeSummarizedExperimentFromPhyloseq(clr)
+  pslist[[a+1]] <- TSE
+  names(pslist)[[a+1]] <- paste("TSEc.l.r", sub("clr", "\\1", g), sep="")}
+
+###########
+#Save Data#
+###########
+saveRDS(pslist, file.path(path_Output_16S, paste(paste(save_name, "ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+
+```
+
+### 3.2.1 Read SSU-data
+
+```{r, message=FALSE, warning=FALSE}
+pslist <- readRDS(file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+pslistraw <- readRDS(file.path(path_Output_16S, paste(paste(save_name,"ps_16S_merge_pslistraw", Date, sep="_"), ".rds", sep="")))
+```
+
+# -
+
+## 4 Alpha Diversity
+
+#### 4.1 Observed Diversity Plots
+
+```{r, message=FALSE, warning=FALSE}
+##########################
+#Observed Diversity Plots#
+##########################
+for (i in names(pslist)[grepl("ps_SLWF_21", names(pslist))]){
+  require(plyr); require(ggrepel); require(cowplot); require(phyloseq)
+  #if (OperatingSystem == "Mac" ) {quartz() }
+  tryCatch({
+  g       <- paste(i); print(i) 
+  #gg      <- sub('ps', '', g)
+  A<- plot_richness(pslist[[i]], x = "SampleID", measures = c("Observed")) + # Shannon
+  geom_bar(aes(fill = sample_data(pslist[[i]])$Replicates), stat = "identity", position = "stack") + #fill = Phylum
+  scale_x_discrete(limits = SL_SSU_Samples) +
+  #scale_x_discrete(breaks=factor(sample_data(pslist[[i]])$Replicates, levels=SLOrder)) +
+  scale_fill_manual(values = col.Palette$SL) +
+  theme(axis.text.x.bottom = element_text(size=rel(0.8),angle = 45, vjust = 1, hjust = 1), 
+        legend.title = element_text( size = 6),
+        legend.text = element_text(size = 6),
+        legend.key.size = unit(0.4, 'cm'),)+
+  labs(x = element_blank(), y = "Alpha Diversity Measure (non normalized)")
+  title <- ggdraw() + draw_label_themeRK(paste(g), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRK(paste("Paired End 16S",sep = " "), element = "plot.subtitle",
+                                            x = 0.05, hjust = 0,   
+  vjust = 1)
+  prow <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  A<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0.04, 0.05, 0.98))
+  ggsave(A, filename = paste(paste(save_name, Type, paste(g, "Observed-AlphaDiversity", sep="_"), Date, sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+A
+
+rowSums(otu_table(pslist$ps_SL_21))
+sum(otu_table(pslist$ps_SL_21))
+sum(otu_table(pslist$ps_WF))
+```
+
+
+#### 4.2 Species Accumulation
+
+##### - Figure S1A
+
+```{r, message=FALSE, warning=FALSE}
+require(vegan)
+spacc_raw_SL_21 <- specaccum(otu_table(pslistraw$ps_SL_21), method = "random", permutations = 100)
+spacc_SL_21     <- specaccum(otu_table(pslist$ps_SL_21), method = "random", permutations = 100)
+
+# plot(spacc, ci.type="poly", col="blue", lwd=2, ci.lty=0, ci.col="lightblue")
+# boxplot(spacc, col="yellow", add=TRUE, pch="+")
+
+#creating a dataframe for ggplot2
+data_SL_Raw <- data.frame(Specimen=spacc_raw_SL_21$sites, Richness=spacc_raw_SL_21$richness, SD=spacc_raw_SL_21$sd)
+A<- ggplot() +
+  geom_point(data=data_SL_Raw, aes(x=Specimen, y=Richness)) +
+  geom_line(data=data_SL_Raw, aes(x=Specimen, y=Richness)) +
+  geom_ribbon(data=data_SL_Raw ,aes(x=Specimen, ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+    atheme +
+    theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=10), 
+        legend.text=element_text(size=10)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+Species_Accumulation_raw <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+
+data_SL <- data.frame(Specimen=spacc_SL_21$sites, Richness=spacc_SL_21$richness, SD=spacc_SL_21$sd)
+B<- ggplot() +
+  geom_point(data=data_SL, aes(x=Specimen, y=Richness)) +
+  geom_line(data=data_SL, aes(x=Specimen, y=Richness)) +
+  geom_ribbon(data=data_SL,aes(x=Specimen, ymin=(Richness-2*SD),ymax=(Richness+2*SD)),alpha=0.2) +
+      atheme +
+    theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=10), 
+        legend.text=element_text(size=10)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+Species_Accumulation_Filtered <- cowplot::plot_grid(B, labels = c(""), ncol = 1)
+
+cowplot::plot_grid(Species_Accumulation_raw, Species_Accumulation_Filtered, labels = c("A", "B"), ncol = 1) -> part_1
+ggsave(part_1, filename = paste(paste(save_name, Type, "SpeciesAccumulation", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 6,height = 9)
+part_1
+```
+
+
+#### 4.3 Alpha Diversity Barplot 
+
+##### - Figure 4A
+
+```{r, message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+##########################
+#Barplot  with color code#
+##########################
+TaxLevel <- "Genus"
+for (i in names(pslist)[grepl("ps_SLWF_21", names(pslist))]){
+  require(plyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    g       <- paste(i); print(g)
+    #gg      <- gsub(paste0(".*", "(SL|WF)", ".*"), "\\1", i)
+    gg      <- "SL"
+    FILENAME    <- paste(paste(save_name, "Alpha_BarPlot_Publication", TaxLevel, gg, sep="_"), ".png", sep="")
+    
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- pslist[[i]] %>%
+    tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+    SLOrder <-c("WF", "SLSU21MG","SLSU21BB", "SLSU21SS", "SLSU21ML")
+    ps_alpha_barplot$Reps <- sub("SLSU21", "", ps_alpha_barplot$Replicate2)  
+    RepOrder <-c("WF", "MG-713","BB-692", "SS-665", "ML-633")
+    ps_alpha_barplot$Reps<-ifelse(ps_alpha_barplot$Reps == "MG", "MG-713",
+                        ifelse(ps_alpha_barplot$Reps == "BB", "BB-692",
+                               ifelse(ps_alpha_barplot$Reps == "SS", "SS-665",
+                                      ifelse(ps_alpha_barplot$Reps == "ML", "ML-633", "WF"))))
+
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    phylum_abundance <- ps_alpha_barplot %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+      ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+      ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+      ps_alpha_barplot$SampleID <- factor(ps_alpha_barplot$SampleID, levels = SL_SSU_Samples)
+      
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,]
+    
+    ######################
+    #Define Phylum Colors#
+    ######################
+    phylum_colors <- c(
+          "Actinobacteriota"  = "red", 
+          "Cyanobacteria"     = "green", 
+          "Bacteroidota"      = "darkgreen",
+          "Proteobacteria1"    = "darkorange2", 
+          "Proteobacteria2"    = "#663300",
+          #"Patescibacteria"  = "pink", 
+          "Acidobacteriota "  = "#FF00CC",
+          "Planctomycetota"   = "purple", 
+          "Verrucomicrobiota" = "blue", 
+          "Chloroflexota"     = "cyan",
+          "Deinococcota"      = "#FFFF00",
+          "Gemmatimonadota"   = "#8F7C00",  
+          "Other" = "grey20")
+       generate_shades <- function(base_color, num_variations) {
+        color_ramp <- colorRampPalette(c(base_color, "white"))
+        # Generate a vector of colors
+        colors <- color_ramp(num_variations+1)
+        # Create a data frame with the colors
+        color_palette <- colors[1:(length(colors) - 1)]
+      return(color_palette)}
+
+    ##################################################
+    #Create Color Dataframe for Taxa from PhylaColors#
+    ##################################################
+    taxonomy_df <- df[c("Phylum", "Taxa")]
+    #taxonomy_df$ASV <- sub(".*:", "", taxonomy_df$OTU)
+    taxonomy_df <- taxonomy_df[!duplicated(taxonomy_df$Taxa),]
+    #############################################
+    #Order to ordered_levels from Total Abudance#
+    order_index <- match(ordered_levels, taxonomy_df$Taxa)
+    taxonomy_df <- taxonomy_df[order_index, ]
+    print(head(taxonomy_df[c("Phylum", "Taxa")]))
+    
+    taxonomy_df$Phylum2 <- ifelse(taxonomy_df$Phylum == "Proteobacteria",
+              paste0("Proteobacteria", ave(seq_along(taxonomy_df$Phylum), 
+              taxonomy_df$Phylum, FUN = function(x) ifelse(seq_along(x) %% 2 == 0, 2, 1))),
+                               taxonomy_df$Phylum)
+    
+    unique_phyla <- unique(taxonomy_df$Phylum2)
+      # Assign base colors to unique phyla
+      #phylum_colors <- setNames(base_colors[1:length(unique_phyla)], unique_phyla)
+      # Print the mapping of phyla to colors
+      phylum_cols<- as.data.frame(phylum_colors)
+      phylum_cols$Phyla <- rownames(phylum_cols)
+
+    colored_taxonomy <- data.frame(
+      Taxa = taxonomy_df$Taxa,
+      Phylum2 = taxonomy_df$Phylum2,
+      Color = character(length(taxonomy_df$Taxa)),  # Initialize an empty character vector
+      stringsAsFactors = FALSE)
+  
+  
+    # Generate shades and assign colors to each taxon
+    for (ii in seq_along(unique_phyla)) {
+      phylum <- unique_phyla[ii]
+      
+      if (phylum %in% names(phylum_colors)) {
+         base_color <- phylum_colors[[phylum]]
+        } else {
+        base_color <- phylum_colors[["Other"]]
+        }
+      taxon_indices <- taxonomy_df$Phylum2 == phylum
+      num_variations <- sum(taxon_indices)
+      shades <- generate_shades(base_color, pmin(num_variations, 5))
+      
+      #colored_taxonomy$Color[taxon_indices] <- shades 
+      colored_taxonomy$Color[which(taxon_indices)[1:pmin(num_variations, 5)]]<- shades
+    }
+    
+    colored_taxonomy$Color <- gsub("^$", NA, trimws(colored_taxonomy$Color))
+    colored_taxonomy$Color <- replace_na(colored_taxonomy$Color, "grey50")
+  
+    ##################
+    # #Some adjustments#
+    colored_taxonomy[colored_taxonomy$Taxa == "Polynucleobacter",]$Color <- "#FF6600"
+     colored_taxonomy[colored_taxonomy$Taxa == "Photobacterium",]$Color <- "darkorange3"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Vibrio",]$Color <- "#FF9966"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Citrobacter",]$Color <- "#FFCC00"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Enterobacter",]$Color <-"#993300"
+     colored_taxonomy[colored_taxonomy$Taxa == "Acinetobacter",]$Color <-"#FF9933"
+    #colored_taxonomy[colored_taxonomy$Taxa == "Psychrobacter",]$Color <-"#FF9933"
+    # 
+      Alpha_Diversity_df <- left_join(df, colored_taxonomy)
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+
+ levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% ordered_levels[1:34]] <-
+      "Other"
+
+        p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+        atheme2 +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+      
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      p
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c(col.Palette[[gg]][length(col.Palette[[gg]])], col.Palette[[gg]][-length(col.Palette[[gg]])]), 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+    Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Alpha_Diversity_BarPlot <- plot_grid(Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    ggsave(Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 12, height = 6)
+}
+Alpha_Diversity_BarPlot
+```
+
+
+#### 4.4 Core-Microbiome 
+
+Some thoughts from: 
+McMurtrie, J., Alathari, S., Chaput, D. L., Bass, D., Ghambi, C., Nagoli, J., ... & Tyler, C. R. (2021). Relationships between pond water and tilapia skin microbiomes in aquaculture ponds in Malawi. bioRxiv.McMurtrie, J., Alathari, S., Chaput, D. L., Bass, D., Ghambi, C., Nagoli, J., ... & Tyler, C. R. (2021). Relationships between pond water and tilapia skin microbiomes in aquaculture ponds in Malawi. bioRxiv. 
+
+Core microbiome analysis seeks to find taxa conserved between samples above a defined prevalence threshold. In this case we are interested in finding the core MB of the Fish Swab community which is present in fish across different Locations sites. Core calculations will be performed with the microbiome package. We will then visualise these core taxa as a heatmap using pheatmap. This will also reveal abundances across both Loc and fish samples, indicating if the fish core taxa are in high abundance in the Loc water and therefore potentially non-residents. Final visualisations for the finished figure requires some manual editing in Inkscape.
+
+R Setup Libraries
+
+Import phyloseq objects
+Weight up in choosing what taxa level to study. The full ASV set is large and requires a low core threshold as there is a reasonable degree of variation in ASVs e.g. likely different strains. However, in the core analysis we are most interested in the major types of organisms appearing to be common in either system. For instance we could have three individual ASVs of the same genus, each a key photosynthetic but only one is dominant per pond site, collectively though they are occupying the same niche. This is obviously a generalisation and not applicable to all scenarios. Most core studies I have seen group at genus level. 
+I did explore the use of tip_gloming instead to use a phylogenetic informed grouping level, rather than arbitrary taxonomy, but this compromises resolution of taxonomic classifications that I am not willing to accept. 
+
+```{r, load data, message=FALSE, warning=FALSE, include=TRUE}
+require(phyloseq)
+ps_SL_21_rel <- microbiome::transform(pslist$ps_SL_21, "compositional")
+
+#Initial core computing
+#Setting a detection threshold of 0.0001% (within samples) and prevelance threshold of 80% (across samples).
+SL_core_taxa_standard <- microbiome::core_members(ps_SL_21_rel, detection = 0.0001, prevalence = 90/100)
+ps_SL_21_rel_core <- microbiome::core(ps_SL_21_rel, detection = 0.0001, prevalence = .9)
+core_taxa <- microbiome::taxa(ps_SL_21_rel_core)
+tax_mat <- tax_table(ps_SL_21_rel_core)
+tax_df <- as.data.frame(tax_mat)
+tax_df$ASV <- rownames(tax_df)
+# select taxonomy of only those OTUs that are core memebers based on the thresholds that were used.
+core_taxa_class <- dplyr::filter(tax_df, rownames(tax_df) %in% core_taxa)
+knitr::kable(head(core_taxa_class))
+
+ps_SL_21_rel_gen <- microbiome::aggregate_taxa(ps_SL_21_rel_core, "Genus")
+# Check if any taxa with no genus classification. aggregate_taxa will merge all unclassified to Unknown
+any(taxa_names(ps_SL_21_rel_gen) == "Unknown")
+# Remove Unknown
+ps_SL_21_rel_gen <- subset_taxa(ps_SL_21_rel_gen, Genus!="Unknown")
+library(RColorBrewer)
+prevalences <- seq(.05, 1, .05)
+detections <- round(10^seq(log10(1e-5), log10(.2), length = 10), 3)
+
+p1 <- microbiome::plot_core(ps_SL_21_rel_gen, 
+                plot.type = "heatmap", 
+                colours = rev(brewer.pal(5, "RdBu")),
+                prevalences = prevalences, 
+                detections = detections, min.prevalence = .8) +
+    xlab("Detection Threshold (Relative Abundance (%))")
+p1 <- p1 + theme_bw() + ylab("ASVs")
+p1
+
+pslist$Core <- core_taxa_class
+```
+
+##### 4.4.1 Plot Core
+
+###### - Figure S1B
+
+```{r, message=FALSE, warning=FALSE}
+######################################
+#Barplot of Core Taxa with color code#
+######################################
+GroupOfInterest <- SL_core_taxa_standard
+TaxLevel <- "Genus"
+for (i in names(pslist)[grepl("ps_SLWF_21", names(pslist))]){
+  require(plyr); require(ggrepel); require(cowplot); require(phyloseq)
+     
+    g       <- paste(i); print(g)
+    #gg      <- gsub(paste0(".*", "(SL|WF)", ".*"), "\\1", i)
+    gg      <- "SL"
+    FILENAME    <- paste(paste(save_name, "Alpha_CoreTaxa_Publication", TaxLevel, gg, sep="_"), ".png", sep="")
+    
+    ################################
+    #Create Relative Abundance Data#
+    ################################
+    ps_alpha_barplot <- pslist[[i]] %>%
+    tax_glom(taxrank =  TaxLevel)   %>%  
+    transform_sample_counts(function(x) {x/sum(x)*100}) %>% # Transform to rel. abundance
+    psmelt() %>%                                         # Melt to long format
+    #filter(Abundance > 1) %>%                       # Filter out low abundance taxa
+    arrange(Genus)        %>%                                # Sort data frame alphabetically by phylum
+    dplyr::arrange(desc(Abundance))
+ 
+    SLOrder <-c("WF", "SLSU21MG","SLSU21BB", "SLSU21SS", "SLSU21ML")
+    ps_alpha_barplot$Reps <- sub("SLSU21", "", ps_alpha_barplot$Replicate2)  
+    RepOrder <-c("WF", "MG-713","BB-692", "SS-665", "ML-633")
+    ps_alpha_barplot$Reps<-ifelse(ps_alpha_barplot$Reps == "MG", "MG-713",
+                        ifelse(ps_alpha_barplot$Reps == "BB", "BB-692",
+                               ifelse(ps_alpha_barplot$Reps == "SS", "SS-665",
+                                      ifelse(ps_alpha_barplot$Reps == "ML", "ML-633", "WF"))))
+
+    ps_alpha_barplot$ASV <- sub(".*:", "", ps_alpha_barplot$OTU)  
+    ps_alpha_barplot$ASV <- sub('\\.', ' ', ps_alpha_barplot$ASV)
+    #print(ps_alpha_barplot[grep("Megaira", ps_alpha_barplot$ASV),]$ASV)
+    
+    ############################
+    #Create TotalAbundance Data#
+    ############################
+    phylum_abundance <- ps_alpha_barplot %>%
+      dplyr::group_by(.data[[TaxLevel]]) %>%
+      dplyr::summarise(TotalAbundance = sum(Abundance))
+    ordered_levels <- phylum_abundance %>%
+      dplyr::arrange(desc(TotalAbundance)) %>%
+      pull(.data[[TaxLevel]])
+    ps_alpha_barplot$Taxa <- factor(ps_alpha_barplot[[TaxLevel]], levels = ordered_levels)
+    
+    ##########################
+    #Subset for Interest ASVs#
+    ##########################
+    #df <- ps_alpha_barplot #[ps_alpha_barplot$OTU %in% GroupOfInterest,] #Normal Alpha
+    df <- ps_alpha_barplot[ps_alpha_barplot$OTU %in% GroupOfInterest,] #Core Alpha 
+    df$Taxa <- factor(df$Taxa, levels = ordered_levels[ordered_levels %in% df$Taxa])
+    
+    ######################
+    #Define Phylum Colors#
+    ######################
+    phylum_colors <- c(
+          "Actinobacteriota"  = "red", 
+          "Cyanobacteria"     = "green", 
+          "Bacteroidota"      = "darkgreen",
+          "Proteobacteria1"    = "darkorange2", 
+          "Proteobacteria2"    = "#663300",
+          #"Patescibacteria"  = "pink", 
+          "Acidobacteriota "  = "#FF00CC",
+          "Planctomycetota"   = "purple", 
+          "Verrucomicrobiota" = "blue", 
+          "Chloroflexota"     = "cyan",
+          "Deinococcota"      = "#FFFF00",
+          "Gemmatimonadota"   = "#8F7C00",  
+          "Other" = "grey20")
+       generate_shades <- function(base_color, num_variations) {
+        color_ramp <- colorRampPalette(c(base_color, "white"))
+        # Generate a vector of colors
+        colors <- color_ramp(num_variations+1)
+        # Create a data frame with the colors
+        color_palette <- colors[1:(length(colors) - 1)]
+      return(color_palette)}
+
+    ##################################################
+    #Create Color Dataframe for Taxa from PhylaColors#
+    ##################################################
+    taxonomy_df <- df[c("Phylum", "Taxa")]
+    #taxonomy_df$ASV <- sub(".*:", "", taxonomy_df$OTU)
+    taxonomy_df <- taxonomy_df[!duplicated(taxonomy_df$Taxa),]
+    #############################################
+    #Order to ordered_levels from Total Abudance#
+    order_index <- match(ordered_levels[ordered_levels %in% taxonomy_df$Taxa], taxonomy_df$Taxa)
+    taxonomy_df <- taxonomy_df[order_index, ]
+    print(head(taxonomy_df[c("Phylum", "Taxa")]))
+    
+    taxonomy_df$Phylum2 <- ifelse(taxonomy_df$Phylum == "Proteobacteria",
+              paste0("Proteobacteria", ave(seq_along(taxonomy_df$Phylum), 
+              taxonomy_df$Phylum, FUN = function(x) ifelse(seq_along(x) %% 2 == 0, 2, 1))),
+                               taxonomy_df$Phylum)
+    
+    unique_phyla <- unique(taxonomy_df$Phylum2)
+      # Assign base colors to unique phyla
+      #phylum_colors <- setNames(base_colors[1:length(unique_phyla)], unique_phyla)
+      # Print the mapping of phyla to colors
+      phylum_cols<- as.data.frame(phylum_colors)
+      phylum_cols$Phyla <- rownames(phylum_cols)
+
+    colored_taxonomy <- data.frame(
+      Taxa = taxonomy_df$Taxa,
+      Phylum2 = taxonomy_df$Phylum2,
+      Color = character(length(taxonomy_df$Taxa)),  # Initialize an empty character vector
+      stringsAsFactors = FALSE)
+  
+  
+    # Generate shades and assign colors to each taxon
+    for (ii in seq_along(unique_phyla)) {
+      phylum <- unique_phyla[ii]
+      
+      if (phylum %in% names(phylum_colors)) {
+         base_color <- phylum_colors[[phylum]]
+        } else {
+        base_color <- phylum_colors[["Other"]]
+        }
+      taxon_indices <- taxonomy_df$Phylum2 == phylum
+      num_variations <- sum(taxon_indices)
+      shades <- generate_shades(base_color, pmin(num_variations, 5))
+      
+      #colored_taxonomy$Color[taxon_indices] <- shades 
+      colored_taxonomy$Color[which(taxon_indices)[1:pmin(num_variations, 5)]]<- shades
+    }
+    
+    colored_taxonomy$Color <- gsub("^$", NA, trimws(colored_taxonomy$Color))
+    colored_taxonomy$Color <- replace_na(colored_taxonomy$Color, "grey50")
+    ##################
+    # #Some adjustments#
+    
+    # colored_taxonomy[colored_taxonomy$Taxa == "Polynucleobacter",]$Color <- "#FF6600"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Photobacterium",]$Color <- "darkorange3"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Vibrio",]$Color <- "#FF9966"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Citrobacter",]$Color <- "#FFCC00"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Enterobacter",]$Color <-"#993300"
+    # colored_taxonomy[colored_taxonomy$Taxa == "Acinetobacter",]$Color <-"#FF9933"
+    #colored_taxonomy[colored_taxonomy$Taxa == "Psychrobacter",]$Color <-"#FF9933"
+    # 
+      Alpha_Diversity_df <- left_join(df, colored_taxonomy)
+    color_mapping <- setNames(Alpha_Diversity_df$Color, Alpha_Diversity_df$Taxa)
+      Alpha_Diversity_df <<- Alpha_Diversity_df
+ # levels(Alpha_Diversity_df$Taxa)[!levels(Alpha_Diversity_df$Taxa) %in% ordered_levels[1:34]] <-
+ #      "Other"
+
+        p <- ggplot(Alpha_Diversity_df, 
+        aes(x = SampleID, y = Abundance, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+        atheme2 +
+        ylab("Relative Abundance [%] \n") + xlab("Sample") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold"))
+      p
+      g <- ggplot_gtable(ggplot_build(p))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c(col.Palette[[gg]][length(col.Palette[[gg]])], col.Palette[[gg]][-length(col.Palette[[gg]])]), 0.8)
+        k <- 1
+        for (iii in stripr) {
+        j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+        g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+
+    Core_Alpha_Diversity_BarPlot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    Core_Alpha_Diversity_BarPlot <- plot_grid(Core_Alpha_Diversity_BarPlot, ncol = 1, rel_heights = c(100))
+    Core_Alpha_Diversity_BarPlot
+    ggsave(Core_Alpha_Diversity_BarPlot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 9,
+    height = 5)
+}
+#Core_Alpha_Diversity_BarPlot
+```
+
+##### 4.4.2 Rel.Change in CoreMicrobiome vs Non Core
+
+```{r, message=FALSE, warning=FALSE, fig.width=12, fig.height=6}
+##################################################################
+#Analyse Normalized Relative Abundance Changes in the Microbiome#
+##################################################################
+    RelCoreAbundance <- Alpha_Diversity_df[c("Sample", "Abundance", "Reps", "Taxa", "OTU", "Phylum", "Color")]
+    RelCoreAbundance <- RelCoreAbundance[RelCoreAbundance$OTU %in% GroupOfInterest, ]
+    RelCoreAbundance_AvgAbun <-  RelCoreAbundance %>% dplyr::group_by(Reps, Taxa) %>%  
+      dplyr::summarize(AvgAbun = mean(Abundance))
+
+    RelCoreAbundance_AvgAbun %>% dplyr::group_by(Reps)
+    RelCoreAbundance_normalized <- RelCoreAbundance_AvgAbun %>%
+      dplyr::group_by(Reps) %>%
+      dplyr::mutate(NormalizedAbun = AvgAbun / sum(AvgAbun)*100) %>%
+      dplyr::ungroup()
+
+  RelCoreAbundance_normalized <- left_join(RelCoreAbundance_normalized, 
+      RelCoreAbundance[c("Taxa", "Phylum", "Color")][!duplicated(RelCoreAbundance$Taxa),])
+  
+  RelCoreAbundance_normalized %>%
+  dplyr::group_by(Reps, Phylum) %>%
+  dplyr::summarise(SumNormalizedAbun = sum(NormalizedAbun))
+
+  RelCoreAbundance_normalized %>%
+  dplyr::group_by(Reps) %>%
+  dplyr::summarise(SumAvgAbun = sum(AvgAbun))
+  FILENAME    <- paste(paste(save_name, "Alpha_CoreTaxa_RelCore_Publication", TaxLevel, gg, sep="_"), ".png", sep="")
+  RelCoreAbundance_normalized_barplot <- ggplot(RelCoreAbundance_normalized, 
+        aes(x = Reps, y = NormalizedAbun, fill = factor(Taxa))) + 
+        geom_bar(stat = "identity") +
+        facet_grid(. ~ factor(Reps, levels = RepOrder), drop = TRUE, scale = "free", space = "free_x") +
+        atheme2 +
+        ylab("Relative Abundance [%] \n") + xlab("") + 
+        labs(fill="") +
+        scale_fill_manual(values = color_mapping) +
+        #ggrepel::geom_text_repel(x = df$SampleID, y = df$Abundance,  aes(label = Labels),
+        #inherit.aes = FALSE, min.segment.length = 0,nudge_y = 20,size=3, max.overlaps = Inf) +
+      #awhite + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        #theme(axis.text.x=element_blank(),
+        #axis.text.y=element_blank(),
+        #axis.title.y.left = element_blank(),
+        #axis.ticks.y =element_blank() 
+        #) +
+        theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=9), 
+        legend.text=element_text(size=9), 
+        axis.text.x.bottom = element_text(size= 9, face = "bold", angle = 45, hjust = 1),
+        strip.text.y.left = element_text(size = 9,face = "bold"), 
+        axis.title.y.left = element_text(size=12,face = "bold")) +
+        theme(legend.position = "none") 
+      #RelCoreAbundance_normalized_barplot
+        
+        g <- ggplot_gtable(ggplot_build(RelCoreAbundance_normalized_barplot ))
+          stripr <- which(grepl('strip-t', g$layout$name))
+          fills <- alpha(col.Palette[[gg]], 0.7)
+          k <- 1
+          for (iii in stripr) {
+          j <- which(grepl('rect', g$grobs[[iii]]$grobs[[1]]$childrenOrder))
+          g$grobs[[iii]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+          k <- k+1}
+        
+    RelCoreAbundance_normalized_barplot <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    RelCoreAbundance_normalized_barplot<- plot_grid(RelCoreAbundance_normalized_barplot, ncol = 1, rel_heights = c(100))
+    ggsave(RelCoreAbundance_normalized_barplot, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4,
+    height = 4)
+
+  ##############
+  #Summary Plot#
+  ##############
+cowplot::plot_grid(Core_Alpha_Diversity_BarPlot, RelCoreAbundance_normalized_barplot, labels = c("A", "B"), ncol = 2, rel_widths = c(1,0.5)) -> Core_Microbiome_plot
+    
+ggsave(Core_Microbiome_plot, filename = paste(paste(save_name,"Core_Microbiome_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10, height = 5)
+
+Core_Microbiome_plot
+```
+
+
+#### 4.5 Alpha Metrics & Stats
+
+```{r, message=FALSE, warning=FALSE}
+##############################################
+#Get shannon for all samples and group means:#
+data_shannon <-as.data.frame(vegan::diversity(otu_table(pslist$ps_SLWF_21), index = "shannon"))
+names(data_shannon) <- "Shannon"
+replicates <- c("SLSU21MG", "SLSU21BB", "SLSU21SS", "SLSU21ML", "WF")
+mean_Shannon <- data.frame(Replicate = character(), Mean_Shannon = numeric(), stringsAsFactors = FALSE)
+for (replicate in replicates) {
+    subset_rows <- grep(paste0("^", replicate), rownames(data_shannon))
+    mean_value <- mean(data_shannon[subset_rows, "Shannon"])
+    mean_Shannon <- rbind(mean_Shannon, data.frame(Replicate = replicate, Mean_Shannon = mean_value))
+}
+mean_Shannon
+
+data_Richness <-as.data.frame(vegan::estimateR(otu_table(pslist$ps_SLWF_21)))
+data_Richness <- as.data.frame(t(data_Richness[1,]))
+names(data_Richness) <- "Obs.Richness"
+replicates <- c("SLSU21MG", "SLSU21BB", "SLSU21SS", "SLSU21ML", "WF")
+mean_Richness <- data.frame(Replicate = character(), Mean_Obs.Richness = numeric(), stringsAsFactors = FALSE)
+for (replicate in replicates) {
+    subset_rows <- grep(paste0("^", replicate), rownames(data_Richness))
+    mean_value <- mean(data_Richness[subset_rows, "Obs.Richness"])
+    mean_Richness <- rbind(mean_Richness, data.frame(Replicate = replicate, Mean_Obs.Richness = mean_value))
+}
+mean_Richness
+
+
+#################################
+#Creating Stats over all Samples#
+#################################
+library(phyloseq)
+library(tidyverse)
+merged_reps <- merge_samples(pslist$ps_SLWF_21, "Replicate2")
+# Use psmelt to obtain a long-format data.frame
+merged_reps_Order <- merged_reps %>% tax_glom(taxrank = "Phylum") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>% 
+  psmelt() %>% 
+  dplyr::filter(Abundance > 0.01) %>%                          
+  dplyr::arrange("Phylum")    
+
+B<- as.data.frame(merged_reps_Order %>%
+  dplyr::select(Sample, SampleID,  Phylum, Abundance) %>%
+  dplyr::group_by(Phylum, Sample) %>%
+  dplyr::summarise(TotalAbundance = (sum(Abundance))*100)) 
+
+#Relative Abundance of Phyla: 
+B %>%
+  group_by(Sample) %>%
+  pivot_wider(names_from = Phylum, values_from = TotalAbundance) %>% as.data.frame()
+
+#RatioProteobacteria_Bacteroidota
+Proteobacteria_Bacteroidota_ratio <- B %>%
+  group_by(Sample) %>%
+  filter(Phylum %in% c("Proteobacteria", "Bacteroidota")) %>%
+  pivot_wider(names_from = Phylum, values_from = TotalAbundance) %>%
+  mutate(Ratio = Bacteroidota / Proteobacteria *100)
+Proteobacteria_Bacteroidota_ratio
+
+########
+#Genera#
+merged_reps <- merge_samples(pslist$ps_SL_21, "Replicates")
+# Use psmelt to obtain a long-format data.frame
+merged_reps_Genus <- merged_reps %>% tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>% 
+  psmelt() %>% 
+  dplyr::filter(Abundance > 0.01) %>%                          
+  dplyr::arrange_("Genus")      
+C<- as.data.frame(merged_reps_Genus %>%
+  dplyr::select(Replicates, SampleID,  Genus, Abundance) %>%
+  dplyr::group_by(Genus) %>%
+  dplyr::summarise(TotalAbundance = (sum(Abundance)/4)*100)) %>%
+  dplyr::arrange(desc(TotalAbundance))
+#Overall Abundance
+C
+
+#Abundance per Sampling Group
+D<- as.data.frame(merged_reps_Genus %>%
+  dplyr::select(Sample,  Genus, Abundance) %>%
+  dplyr::group_by(Genus, Sample) %>%
+  dplyr::summarise(AbundancePerSamplingGroup = (sum(Abundance))*100)) 
+D
+```
+
+# -
+
+## 5 Beta Diversity
+
+#### 5.1 PCA
+
+##### - Figure 4 D
+
+```{r, message=FALSE, warning=FALSE}
+##################
+# SampleDist_PCAs# Publication 
+##################
+#pslist <- pslistraw
+for (i in names(pslist)[grepl("TSEc.l.r_SLWF_21", names(pslist))]){
+  require(plyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(DESeq2)
+  require(matrixStats)
+  TSE <- pslist[[i]]
+  tryCatch({
+  g       <- paste(i); print(i) 
+  gg      <- sub('TSEc.l.r_', '', g)
+  
+  A <- pcaplotRK_publication(TSE,intgroup = c("Replicate2"), pcX = 1, pcY = 2, title="",ellipse = TRUE,     ellipse.prob = 0.5, group_order = col.Palette$SL) +
+    scale_fill_manual(values=col.Palette$SL) +
+    scale_color_manual(values=col.Palette$SL) + 
+    atheme +
+  
+  theme(
+         panel.background = element_rect(fill='transparent'), #transparent panel bg
+         plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+         #legend.background = element_rect(fill='transparent'), #transparent legend bg
+         #legend.box.background = element_rect(fill='transparent') #transparent legend panel
+         ) +
+      theme(axis.title.x.bottom =  element_text(color="grey13"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+      theme(
+        legend.title=element_text(size=8), 
+        legend.text=element_text(size=8)) +
+    theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+
+  SampleDist_PCA <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  
+  A <- plot_grid(SampleDist_PCA, ncol = 1)
+   plot(A)
+  ggsave(A, filename = paste(save_name, gg, "clrPCA.png"), path = pathPlots, device='png', dpi=300, width = 6,
+  height = 5)
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+```
+
+### 5.2 PERMANOVA 
+
+https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+While PCA is an exploratory data visualization tool, we can test whether the samples cluster beyond that expected by sampling variability using permutational multivariate analysis of variance (PERMANOVA). It does this by partitioning the sums of squares for the within- and between-cluster components using the concept of centroids. Many permutations of the data (i.e. random shuffling) are used to generate the null distribution. The test from ADONIS can be confounded by differences in dispersion (or spread)…so we want to check this as well.
+
+```{r, message=FALSE, warning=FALSE}
+#Generate distance matrix
+ps_clr <- microbiome::transform(pslist$ps_SLWF_21, "clr")
+#Generate distance matrix
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+#ADONIS test
+vegan::adonis2(clr_dist_matrix ~ phyloseq::sample_data(pslist$ps_SLWF_21)$Kind)
+#Dispersion test and plot
+dispr <- vegan::betadisper(clr_dist_matrix, phyloseq::sample_data(pslist$ps_SLWF_21)$Kind)
+dispr
+plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+boxplot(dispr, main = "", xlab = "")
+vegan::permutest(dispr)
+anova(vegan::betadisper(clr_dist_matrix, phyloseq::sample_data(pslist$ps_SLWF_21)$Kind))
+#Cant trust Adonis
+
+##################
+#For Fish vs Fish#
+##################
+#Pairwise Test
+set.seed(123)
+library(vegan)
+ps_clr <- microbiome::transform(pslist$ps_SL_21, "clr")
+clr_dist_matrix <- phyloseq::distance(ps_clr, method ="euclidean")
+vegan::adonis2(clr_dist_matrix ~ phyloseq::sample_data(ps_clr)$Loc)
+dispr <- vegan::betadisper(clr_dist_matrix, phyloseq::sample_data(pslist$ps_SL_21)$Loc)
+dispr
+plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+boxplot(dispr, main = "", xlab = "")
+vegan::permutest(dispr)
+anova(vegan::betadisper(clr_dist_matrix, phyloseq::sample_data(pslist$ps_SL_21)$Loc))
+#Trust Adonis
+pairwise.adonis(clr_dist_matrix, phyloseq::sample_data(ps_clr)$Loc)
+pairwise.adonis2(clr_dist_matrix ~ Loc, data=data.frame(phyloseq::sample_data(pslist$ps_SL_21)))
+```
+
+Different approach via vst transformed data
+https://astrobiomike.github.io/amplicon/dada2_workflow_ex
+```{r, message=FALSE, warning=FALSE}
+#Fish vs Water
+deseq_counts <- DESeqDataSetFromMatrix(as.data.frame(t(otu_table(pslist$ps_SLWF_21))), colData = phyloseq::sample_data(pslist$ps_SLWF_21), design = ~Kind)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+anova(vegan::betadisper(euc_dist, phyloseq::sample_data(pslist$ps_SLWF_21)$Kind)) 
+
+#Fish vs Fish
+deseq_counts <- DESeqDataSetFromMatrix(as.data.frame(t(otu_table(pslist$ps_SL_21))), colData = phyloseq::sample_data(pslist$ps_SL_21), design = ~Loc)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+anova(vegan::betadisper(euc_dist, phyloseq::sample_data(pslist$ps_SL_21)$Loc)) 
+```
+
+Checking by all sample types, we get a significant result (0.002) from the betadisper test. This tells us that there is a difference between group dispersions, which means that we can’t trust the results of an adonis (permutational anova) test on this, because the assumption of homogenous within-group disperions is not met. This isn’t all that surprising considering how different the water and biofilm samples are from the rocks.
+
+An important note: An NMDS is just a visualization technique, and is not a statistical assessment of sample separation or correlation. For this you should run a statistical test, like an ANOSIM test for categorical variables, or a Mantel test for continuous variables. Other ordination techniques like PCA, CA, CCA, RDA, etc, may be more useful to you if you want your axes to be meaningful, or if you want to talk about variation partitioning.
+
+Anosim
+
+```{r, message=FALSE, warning=FALSE}
+#Generate distance matrix
+ps_clr <- microbiome::transform(pslist$ps_SLWF_21, "clr")
+clr_dist_matrix <- phyloseq::distance(ps_clr, method = "euclidean") 
+vegan::anosim(clr_dist_matrix, phyloseq::sample_data(pslist$ps_SLWF_21)$Kind, distance = "euclidean")
+```
+
+# -
+
+## 6  Export ASV & Core Dataframe
+
+```{r, message=FALSE, warning=FALSE}
+#############################################
+#Create Bacterial Counts and Reseq Dataframe#
+#############################################  
+SL_SSU_Samples
+
+TAX <- as.data.frame(tax_table(pslist$ps_SLWF_21))
+OTU <- as.data.frame(t(otu_table(pslist$ps_SLWF_21)))
+OTU$ASV <- rownames(OTU)
+OTU<- OTU[,match(c(SL_SSU_Samples, "ASV"), colnames(OTU))] #reorder Colnames
+REFSEQ <- refseq(pslist$ps_SLWF_21)
+REFSEQ <- stack(as.character(REFSEQ, use.names=TRUE))
+colnames(REFSEQ)[colnames(REFSEQ) == "ind"] <- "ASV"
+SSUData <- TAX %>% rownames_to_column("RowName") %>%
+          left_join(OTU %>% rownames_to_column("RowName"), by = "RowName") %>%
+          column_to_rownames("RowName")
+SSUData  <- left_join(SSUData , REFSEQ)
+rownames(SSUData) <- SSUData$ASV
+#Count species per Sample
+head(ddply(SSUData ,.(ASV),numcolwise(sum)))
+
+  ps_SLWF_21_relAbund <- pslist$ps_SLWF_21 %>%
+        transform_sample_counts(function(x) {x/sum(x)*100})
+  SSU_counts_rel <- as.data.frame(t(otu_table(ps_SLWF_21_relAbund))) 
+  names(SSU_counts_rel) <- paste(names(SSU_counts_rel), "rel", sep="")
+  SSU_counts_rel <- SSU_counts_rel %>%  mutate("ASV" = rownames(.))  %>% as.data.frame()
+  SSU_counts_rel <- SSU_counts_rel[,match(c(paste(SL_SSU_Samples, "rel", sep=""), "ASV"),
+                                         colnames(SSU_counts_rel))] #reorder Colnames
+  SSU_counts_rel <- format(round(SSU_counts_rel[paste(SL_SSU_Samples, "rel", sep="")], 2), 
+                           nsmall = 2)
+
+  SSU_counts_rel[] <- sapply(SSU_counts_rel, as.numeric)
+  SSU_counts_rel$relASVMeanAbundance <-  rowMeans(SSU_counts_rel)
+  SSU_counts_rel <- SSU_counts_rel %>%  mutate("ASV" = rownames(.))  %>% as.data.frame()
+  
+  SSU_Data <- left_join(SSUData, SSU_counts_rel)
+  SSU_Data <- SSU_Data %>% relocate(paste(SL_SSU_Samples, "rel", sep=""), .after=Species)
+  SSU_Data <- SSU_Data %>% relocate(SL_SSU_Samples, .after=ASV)
+  
+  write.csv2(SSU_Data, file.path(path_Output_16S,paste(paste(save_name,"SL_16S_merge_Filter_ASV_besttax", Date, sep="_"), ".csv", sep="")))
+  
+  write.csv2(SSU_Data[SSU_Data$ASV%in% SL_core_taxa_standard,], 
+             file.path(path_Output_16S,paste(paste(save_name,"16S_merge_Filter_ASV_besttax_Core", Date, sep="_"), ".csv", sep="")))
+  
+```
+
+#-
+
+# 7 Differential Abundance Testing DAT
+
+### 7.1 DESeq2
+
+```{r, DESeq2, message=FALSE, warning=FALSE}
+ddslist <- list()
+for (i in names(pslist)[grepl("ps_SL_21|ps_SLWF_21", names(pslist))]){
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  require(phyloseq); require(DESeq2); require(tidyverse); require(plyr); require(dplyr)
+  g <- paste(i); print(g)
+  a <- length(ddslist)
+  ps <- pslist[[i]]
+  #sample_data(ps)[[variable]] <- as.factor(sample_data(ps)[[variable]])
+  #dds <- phyloseq_to_deseq2(ps, as.formula(paste("~",variable)))
+  #dds <- DESeq(dds)
+  
+  #  if (grepl("WF", i)) {
+  #  VARIABLE <- "Kind"
+  #} else {
+  #  VARIABLE <- variable
+  #}
+  
+  VARIABLE <- variable
+  
+    if (!taxa_are_rows(ps)) {
+        ps <- t(ps)}
+    countData = round(as(otu_table(ps), "matrix"), digits = 0)
+    SAMDF<-SAMDF16S[rownames(SAMDF16S) %in% rownames(sample_data(ps)),]
+    library(DESeq2)
+    dds<- DESeqDataSetFromMatrix(countData =
+        as.matrix(as.data.frame(countData)[rownames(SAMDF)]), colData = SAMDF,
+        design =as.formula(paste("~",VARIABLE)))
+    dds  <- DESeq(dds)
+    vst   <- varianceStabilizingTransformation(dds)
+  ddslist [[a+1]] <- ps
+  names(ddslist )[[a+1]] <- paste("ps", sub("ps", "\\1", g), sep="")
+  ddslist [[a+2]] <- dds
+  names(ddslist )[[a+2]] <- paste("dds", sub("ps", "\\1", g), sep="")
+  ddslist [[a+3]] <- vst
+  names(ddslist )[[a+3]] <- paste("vst", sub("ps", "\\1", g), sep="")
+}
+
+for (i in names(ddslist)[grepl("dds", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  require(DESeq2); require(tidyverse); require(plyr); require(dplyr)
+  tryCatch({
+  a       <- length(ddslist)
+  g       <- paste(i)
+  gg      <- sub('....', '', g); print(gg)
+  name2   <- ddslist[names(ddslist)[grepl(paste(gg), names(ddslist))]]
+  VST     <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  SAMDF   <- data.frame(sample_data(name2[[names(name2)[grepl("ps", names(name2))]]]))
+  
+  ###############Selection of Comparisons################
+  VariableOrder<-VariableOrder
+  A <- as.data.frame(t(combn(SAMDF %>% 
+  arrange(factor(Season, levels = VariableOrder)) %>% #Chane hard coded Variable name here! 
+  pull(paste(variable)) %>% 
+  unique(),2)))
+  A$V3<-Reduce(function(...) paste(..., sep = "-"), A)
+  #######################################################
+  
+  #  if (grepl("WF", i)) {
+  #   VARIABLE <- "Kind"
+  #   A <-data.frame(c("Fish"="Fish"), c("Water"="Water"), c("Fish-Water"= "Fish-Water"))
+  # } else {
+  #   VARIABLE <- variable
+  # }
+ 
+  VARIABLE <- variable
+   
+  mylist <- list() 
+  for (i in 1:nrow(A)) {
+  res <- results(ddslist[[g]], lfcThreshold = 0.0, alpha=0.05, contrast=c(VARIABLE,A[i,1],A[i,2]))
+  mylist[[i]] <- res 
+  names(mylist)[[i]] <- A[i,3]}
+  
+  mylist2 <-list()
+  for (x in names(mylist)) {
+  mylist2[[x]]<-dplyr::left_join(rownames_to_column(as.data.frame(mylist[[x]])),  
+                          rownames_to_column(as.data.frame(VST[rownames(VST) %in%
+                          rownames(as.data.frame(mylist[[x]])),])))
+
+  mylist2 <- lapply(mylist2,na.omit)
+  paste("Dim with NAs")
+  paste(sapply(mylist2,dim))
+  paste("Bacterial species with Basemean lower 1")
+  paste(sapply(lapply(mylist2, function(y) {y[which(y$baseMean < 1),]}),dim))
+  mylist2 <- lapply(mylist2, function(y) {y[which(y$padj < alpha),]})
+  paste("Dim NA omit")
+  paste(sapply(mylist2,dim))
+  mylist2 <- lapply(mylist2, function(z){z[order(z$padj),]})
+  mylist2 <- lapply(mylist2, function(x) {x$sign <-ifelse(sign(x$log2FoldChange) > 0, "enriched", "diminished");return(x)})
+  }
+  
+  ddslist[[a+1]] <- mylist2
+  names(ddslist)[[a+1]] <- paste("res", sub("dds", "\\1", g), sep="")},
+  error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+names(ddslist)
+paste("Differentially Abundant Taxa")
+sapply(ddslist$"res_SL_21" ,dim)[1,]
+sapply(ddslist$"res_SLWF_21" ,dim)[1,]
+
+###########
+#Save Data#
+###########
+saveRDS(ddslist, file = paste0(file.path(path_Output_16S, paste(paste(save_name,"16S_DAT_Replicates_pairwise", Date, sep="_"), ".rds", sep=""))))
+
+ddslist<-readRDS(file = paste0(file.path(path_Output_16S, paste(paste(save_name, "16S_DAT_Replicates_pairwise", Date, sep="_"), ".rds", sep=""))))
+```
+
+### 7.2 DAT visualization
+
+#### 7.2.1 PCA
+
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=8}
+##################
+# SampleDist PCAs#
+##################
+for (i in names(ddslist)[grepl("vst", names(ddslist))]){
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de using code adapted from
+        pcaExplorer, please cite:
+      Marini, F., & Binder, H. (2019). pcaExplorer: an R/Bioconductor package for interacting with RNA-seq
+      principal components. BMC bioinformatics, 20, 1-8.")
+  require(plyr); require(ggrepel); require(cowplot)
+  if (OperatingSystem == "Mac" ) {quartz() }
+  tryCatch({
+  g       <- paste(i) 
+  gg      <- sub('....', '', g)
+  A<-pcaplotRK3(ddslist[[i]],intgroup = c("Replicates"), pcX = 1, pcY = 2, title="",ellipse = TRUE,     ellipse.prob = 0.5) +
+  scale_fill_manual(values=col.Palette$SL) + #col.Palette.SeqCenter #col.Palette.Cruises
+  scale_color_manual(values=col.Palette$SL)+ atheme
+  prow <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  title <- ggdraw() + draw_label_themeRK(paste(Species,  gg, Type), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRK(paste("vst-PCA [not dealing with compositionality]", "with",      length(rownames(ddslist[[i]])),"taxa [tax-glommed]",sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0,   
+  vjust = 1)
+  A<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0.04, 0.05, 0.98))
+  plot(A)
+  ggsave(A, filename = paste(paste(save_name, gg, Type, "clrPCA", sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+  height = 8)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+###################
+#Pairwise Barplots#
+###################
+for (i in names(ddslist)[grepl("res", names(ddslist))]){
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de")
+  require(plyr); require(ggrepel); require(cowplot);  require(scales)
+  tryCatch({
+  g       <- paste(i) 
+  gg      <- sub('....', '', g)
+  res     <- ddslist[[i]]
+  FILENAME    <- paste(paste(Species, gg, Type, "LCF0"), ".png", sep="")
+  TITLE       <- paste(Species, gg, Type, "Differential abundant taxa", sep=" ")
+  for (x in names(res)){ 
+        tryCatch({
+  res_tax_sig <- res[[x]]
+  xx       <- paste(x)
+  #res <- res[res$baseMean >= 10,] #Select Species with Basemean higher 10
+  res_tax_sig<-res_tax_sig[order(res_tax_sig$baseMean, decreasing=T), ] #order for BaseMean
+  res_tax_sig_head <-head(res_tax_sig, 20)
+  rownames(res_tax_sig_head) <-res_tax_sig_head$rowname
+  p <- ggplot(data=res_tax_sig_head, aes(x=fct_reorder(rownames(res_tax_sig_head), baseMean), 
+                                    y= log2FoldChange, fill = baseMean)) +
+  geom_bar(stat="identity") + coord_flip() +
+  scale_fill_gradient(low = "white", high = "red", breaks = c(10, 100, 500, 1000), limits=c(10,500), oob=squish) +
+  geom_text(aes(label = round(baseMean, 0)), color="black", size=2.5)+
+  theme(axis.text.y = element_text(size = 8), strip.text.x = element_text(size = 7),
+        legend.title = element_text( size=6), legend.text=element_text(size=6), 
+        axis.title = element_text(size = 8)) +  xlab("") + ylab("log2 FoldChange") 
+  prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+  title <- cowplot::ggdraw() + draw_label_themeRK(paste(paste(TITLE, ":", sep=""), x, sep = "       "), 
+                element = "plot.title",x = 0.05, hjust     = 0, vjust = 1)
+        subtitle <- cowplot::ggdraw() + draw_label_themeRK(paste("top 20 of", table(sign(res_tax_sig$log2FoldChange) > 0)[2],"enriched,", table(sign(res_tax_sig$log2FoldChange) > 0)[1], "diminished species,", "[tax-glom on species level,", dim(otu_table(ddslist[[paste("ps_", noquote(gg), sep="")]]))[1],"taxa]", sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0, vjust = 1)
+if (OperatingSystem == "Mac" ) { quartz() }
+A<- plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0.05, 0.05, 0.98))
+  plot(A)
+  ggsave(A, filename = paste(paste(save_name, Type, "DESeq2-pairwise", xx, sep="_"), ".png", sep=""), path = pathPlots, device='png', dpi=300, width = 8,
+  height = 8)},
+        error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+  },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+#### 7.2.2 Aggregating DESeq2-Pairwise Comparisons
+
+```{r, Aggregating DESeq2-Pairwise Comparisons, message=FALSE, warning=FALSE}
+###########################################################
+#Determine the Cluster-Numbers from the unclustered-Heatmap
+rowclusternum        <- 1
+columnclusternum     <- 1
+for (i in names(ddslist)[grepl("dds", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de code adapted from https://github.com/kevinblighe/E-MTAB-6141")
+  tryCatch({  
+  min_count   <- 1
+  a           <- length(ddslist)
+  g           <- paste(i)
+  gg          <- sub('....', '', g)
+  FILENAME    <- paste(paste(Species, gg, Type, "LCF0"), ".png", sep="")
+  TITLE       <- draw_label_themeRKwhite(paste(Species, gg, Type, "DAT"), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+  name2       <- ddslist[names(ddslist)[grepl(paste(gg), names(ddslist))]]
+  vst         <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  ps          <-  name2[[names(name2)[grepl("ps", names(name2))]]]
+  SAMDF       <- SAMDF16S[rownames(SAMDF16S) %in% rownames(sample_data(ps)),]
+  res         <- name2[[names(name2)[grepl("res", names(name2))]]] #res
+  res         <- lapply(res, function(z){z[z$baseMean >= min_count,]})
+  
+  resgenelist   <- list()
+    for (ii in names(res)) {
+      genes <- res[[ii]]$rowname
+      resgenelist[[ii]] <- genes}
+  resgenelist <- unique(as.vector(unlist(resgenelist)))
+
+  
+  A           <- BacteriaHeatPlotRK6(vst = vst, Species = Species, min_count = min_count, 
+                          genes_of_interest = resgenelist, Samples = colnames(vst), SAMDF = SAMDF,  TITLE = TITLE)
+  A 
+   #Save heatmap to Environment
+  #b           <- length(.GlobalEnv[[name]])
+  #.GlobalEnv[[name]][[b+1]]        <- hmap
+  #names(.GlobalEnv[[name]])[[b+1]] <- paste("hmap", sub("dds6", "\\1", g), sep="-")
+  
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+
+############################################################
+#Cluster Heatmap with Extraction of Genes/Taxa from Cluster#
+rowclusternum        <- 4
+columnclusternum     <- 4
+Cluster       <- list()
+for (i in names(ddslist)[grepl("dds_SLWF_21", names(ddslist))]) {
+  paste("Code Raphael Koll raphael.koll@uni-hamburg.de code adapted from https://github.com/kevinblighe/E-MTAB-6141")
+  tryCatch({  
+  min_mean_count   <- 10
+  a           <- length(Cluster)
+  g           <- paste(i)
+  gg          <- sub('....', '', g)
+  FILENAME    <- paste(paste(save_name, gg, Type, "LCF0", "MinMeanGroup", min_mean_count, sep="_"), ".png", sep="")
+  TITLE       <- draw_label_themeRK(paste(Species, gg, Type, "DAT"), element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+  name2       <- ddslist[names(ddslist)[grepl(paste(gg), names(ddslist))]]
+  vst         <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  clr         <- as.data.frame(assay(pslist[[paste("TSEc.l.r", sub("dds", "", i), sep="")]]))
+  ps          <- name2[[names(name2)[grepl("ps", names(name2))]]]
+  SAMDF       <- SAMDF16S[rownames(SAMDF16S) %in% rownames(sample_data(ps)),]
+  res         <- name2[[names(name2)[grepl("res", names(name2))]]] #res
+  #res         <- lapply(res, function(z){z[z$baseMean >= min_count,]})
+  ##############################################
+  #Filter for min_mean_count per sampling group#
+  ASVs_to_keep <- list()
+  for (Replicate2 in unique(SAMDF$Replicate2)) {
+    ASVs_to_keep_length <- length(ASVs_to_keep)
+    df <- as.data.frame(otu_table(ps))
+    df_order <- df[grepl(paste(Replicate2), names(df))]
+    df_order[] <- sapply(df_order, as.numeric)
+    df_order <- df_order[rowMeans(df_order) > min_mean_count,]
+    df_order <- rownames(df_order)
+  ASVs_to_keep[[ASVs_to_keep_length+1]] <- df_order
+  names(ASVs_to_keep)[[ASVs_to_keep_length+1]] <- paste(Replicate2)}
+  ASVs_to_keep <- unique(as.vector(unlist(ASVs_to_keep)))
+  ########################
+  #Extract Deseq2 Results#
+  resgenelist   <- list()
+    for (ii in names(res)) {
+      genes <- res[[ii]]$rowname
+      resgenelist[[ii]] <- genes}
+  resgenelist <- unique(as.vector(unlist(resgenelist)))
+  #####################################################
+  #Plot Hamp of z-Score CLR filtered for MinMean_Count#
+  resgenelist <- resgenelist[resgenelist %in% ASVs_to_keep]
+    # hmap <-  BacteriaHeatPlotRK7(OmicsData = CLR, Species = Species, 
+    #                     genes_of_interest = resgenelist, Samples = rownames(SAMDF), 
+    #                     SAMDF = SAMDF,  TITLE = TITLE, filename= FILENAME)
+  BacteriaHeatPlotRK7_withCore(OmicsData = clr, 
+                               Species = Species, 
+                               genes_of_interest = resgenelist, 
+                               Samples = rownames(SAMDF), 
+                               SAMDF = SAMDF,  
+                               TITLE = TITLE, 
+                               filename= FILENAME, 
+                               OutlineColor="grey20")
+  #################################
+  #Extraxt Genes/Taxa from Heatmap#
+    hmap        <- draw(hmap)
+    clrow       <- row_order(hmap)
+    genecluster <- lapply(names(clrow), function(x){
+         out  <- data.frame(GeneID = rownames(heat[clrow[[x]],]),
+                    clrow = paste0(x),stringsAsFactors = FALSE)
+            return(out)}) %>%   
+         do.call(rbind, .)
+  ######################
+  #Save Cluster Results#
+  Cluster1    <- genecluster[genecluster$clrow %in% c("Cluster 1"),]
+  Cluster2    <- genecluster[genecluster$clrow %in% c("Cluster 2"),]
+  Cluster3    <- genecluster[genecluster$clrow %in% c("Cluster 3"),]
+  Cluster4    <- genecluster[genecluster$clrow %in% c("Cluster 4"),]
+  Cluster5    <- genecluster[genecluster$clrow %in% c("Cluster 5"),]
+  Cluster6    <- genecluster[genecluster$clrow %in% c("Cluster 6"),]
+  Cluster1    <- heat[rownames(heat) %in% Cluster1$GeneID,]
+  Cluster2    <- heat[rownames(heat) %in% Cluster2$GeneID,]
+  Cluster3    <- heat[rownames(heat) %in% Cluster3$GeneID,]
+  Cluster4    <- heat[rownames(heat) %in% Cluster4$GeneID,]
+  Cluster5    <- heat[rownames(heat) %in% Cluster5$GeneID,]
+  Cluster6    <- heat[rownames(heat) %in% Cluster6$GeneID,]
+  Cluster[[a+1]] <- as.data.frame(Cluster1)
+  Cluster[[a+2]] <- as.data.frame(Cluster2)
+  Cluster[[a+3]] <- as.data.frame(Cluster3)
+  Cluster[[a+4]] <- as.data.frame(Cluster4)
+  Cluster[[a+5]] <- as.data.frame(Cluster5)
+  Cluster[[a+6]] <- as.data.frame(Cluster6)
+  names(Cluster)[[a+1]] <- paste("Cluster1-", sub("dds", "\\1", g), sep="")
+  names(Cluster)[[a+2]] <- paste("Cluster2-", sub("dds", "\\1", g), sep="")
+  names(Cluster)[[a+3]] <- paste("Cluster3-", sub("dds", "\\1", g), sep="")
+  names(Cluster)[[a+4]] <- paste("Cluster4-", sub("dds", "\\1", g), sep="")
+  names(Cluster)[[a+5]] <- paste("Cluster5-", sub("dds", "\\1", g), sep="")
+  names(Cluster)[[a+6]] <- paste("Cluster6-", sub("dds", "\\1", g), sep="")
+  
+  Cluster[[rowclusternum+1]] <- hmap
+  names(Cluster)[[rowclusternum+1]] <- paste("hmap", sub("dds", "\\1", g), sep="")
+  
+  Cluster[[rowclusternum+2]] <- HeatPlot_prow
+  names(Cluster)[[rowclusternum+2]] <- paste("HeatPlot_prow", sub("dds", "\\1", g), sep="")
+  },
+  error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+print(sapply(Cluster,dim))
+
+
+###########
+#Save Data#
+###########
+saveRDS(Cluster, file = paste0(file.path(path_Output_16S,paste(paste(save_name, "16S_DAT_Replicates_pw4_Cluster", Date, sep="_"), ".rds", sep=""))))
+        
+Cluster <-readRDS(file = paste0(file.path(path_Output_16S,paste(paste(save_name, "16S_DAT_Replicates_pw4_Cluster", Date, sep="_"), ".rds", sep=""))))
+
+
+#Export Data for Cluster
+###########################################
+#SSU_Data created in 4.2.4 Create SSU_Data#
+###########################################
+ Deseq2Cluster_Taxonomy_list <- list()
+  for (Comparison in names(Cluster[grepl("Cluster", names(Cluster))])) {
+      Deseq2Cluster_Taxonomy_list_length <- length( Deseq2Cluster_Taxonomy_list)
+      df <- Cluster[[paste(Comparison)]]
+      df <- SSU_Data[SSU_Data$ASV %in% rownames(df),]
+      
+      df <- df %>% relocate(ASV, .after=SLSU21MLEB9rel)
+      rownames(df) <- df$ASV
+    
+      ASVs_to_keep <- list()
+        for (Replicate2 in unique(SAMDF16S$Replicate2)) {
+          ASVs_to_keep_length <- length(ASVs_to_keep)
+          df_ASV <- as.data.frame(otu_table(ps))
+          df_ASV_order   <- df_ASV [grepl(paste(Replicate2), names(df_ASV))]
+          df_ASV_order[] <- sapply(df_ASV_order, as.numeric)
+          #Subsetting for the actual Cluster#
+          df_ASV_order   <- df_ASV_order[rownames(df_ASV_order) %in% rownames(df),]
+          df_ASV_rel     <- as.data.frame(t(otu_table(pslist$ps_SLWF_21 %>%
+            transform_sample_counts(function(x) {x/sum(x)*100}))))
+          
+          df_ASV_order_rel <- left_join(df_ASV_order %>%
+                                  mutate(ASV = rownames(df_ASV_order)) %>%
+                                  select("ASV"), df_ASV_rel[names(df_ASV_rel) %in%
+                                  names(df_ASV_order)] %>% mutate(ASV = rownames(df_ASV_rel)))
+          
+          df_ASV_order_rel_mean <- df_ASV_order_rel %>%
+            dplyr::select(-ASV) %>%
+            dplyr::summarise(across(everything(), mean, na.rm = TRUE))  %>% rowMeans(.)
+      ASVs_to_keep[[ASVs_to_keep_length+1]] <- df_ASV_order_rel_mean
+      names(ASVs_to_keep)[[ASVs_to_keep_length+1]] <- paste(Replicate2)}
+      
+      max_name <- names(ASVs_to_keep)[which.max(unlist(ASVs_to_keep))]
+      
+      df_SSU_order <- df[grepl(paste(max_name), names(df)) & grepl("rel", names(df))]
+      df_SSU_order[] <- sapply(df_SSU_order, as.numeric)
+      df_SSU_order<- as.data.frame(sort(rowMeans(df_SSU_order), decreasing = T)) 
+      names(df_SSU_order) <-paste("Mean", max_name, sep="_")
+      df_SSU_order$ASV <- rownames(df_SSU_order)
+      
+      df <- left_join(df_SSU_order, df)
+
+       Deseq2Cluster_Taxonomy_list[[ Deseq2Cluster_Taxonomy_list_length+1]] <- df
+      names( Deseq2Cluster_Taxonomy_list)[[ Deseq2Cluster_Taxonomy_list_length+1]] <- Comparison
+    write.csv2(df, file.path(path_Output_16S,paste(paste(save_name,  "16S_DAT_Replicates",paste("Deseq2_",Comparison, sep=""), Date, sep="_"), ".csv", sep="")))
+
+}
+```
+
+#-
+
+# 8 Summary Plots
+
+## 8.1  Venn Diagramms of Output
+
+```{r, message=FALSE, warning=FALSE}
+#VennDiagramm of Fish and Watersamples
+Venn_list_ps <- list(
+"SL" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("SL", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("SL", sample_names(pslist$ps_SLWF_21))])))) > 1], 
+"WF" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("WF", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("WF", sample_names(pslist$ps_SLWF_21))])))) > 1]
+)
+
+Venn_plot <- ggVennDiagram::ggVennDiagram(Venn_list_ps, set_color = c("steelblue","darkblue"), edge_size=1, set_size = 5) + 
+    scale_color_manual(values = c("steelblue","darkblue")) + theme(legend.position = "none")
+Venn_plot
+
+#VennDiagramm of Fish from sampling locations#
+Venn_list_Replicates <-  list(
+"MG-713" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("MG", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("MG", sample_names(pslist$ps_SLWF_21))])))) > 1], 
+"BB-692" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("BB", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("BB", sample_names(pslist$ps_SLWF_21))])))) > 1], 
+"SS-665" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("SS", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("SS", sample_names(pslist$ps_SLWF_21))])))) > 1], 
+"ML-633" = names(rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("ML", sample_names(pslist$ps_SLWF_21))])))) > 1)[rowSums(t(otu_table(subset_samples(pslist$ps_SLWF_21, SampleID %in% sample_names(pslist$ps_SLWF_21)[grepl("ML", sample_names(pslist$ps_SLWF_21))])))) > 1]
+)
+Venn_plot_Reps <- ggVennDiagram::ggVennDiagram(Venn_list_Replicates, set_color =  c("steelblue", "#9E9E9E", "#FFA726", "#FF7043"), edge_size=1, set_size = 5) + 
+    scale_color_manual(values =  c("steelblue", "#9E9E9E", "#FFA726", "#FF7043")) + theme(legend.position = "none")+
+  scale_x_continuous(expand = expansion(mult = .2))
+Venn_plot_Reps 
+```
+
+## 8.2 Publication Plots
+
+```{r, message=FALSE, warning=FALSE, fig.width=12, fig.height=9}
+##############
+#Summary Plot#
+##############
+cowplot::plot_grid(Species_Accumulation_raw, Species_Accumulation_Filtered, labels = c("A", "B"), ncol = 1, rel_heights = c(0.8,1)) -> part_1
+cowplot::plot_grid(part_1, SampleDist_PCA, labels = c("", "C"), ncol = 2) -> part_2
+cowplot::plot_grid(part_2, Alpha_Diversity_BarPlot, labels = c("", "D"), ncol = 1) -> part_3
+ggsave(part_3, filename = paste(paste(save_name, "SSU_SpecAb_PCA_AlphaBarPlot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 9)
+part_3
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=9}
+#####################
+#BacteriaHeat & Venn#
+#####################
+cowplot::plot_grid(Venn_plot, Venn_plot_Reps, labels = c("A", "B"), rel_heights = c(0.8,1), rel_widths = c(0.8,1),ncol = 2) -> part_1
+
+ggsave(Venn_plot, filename = paste(paste(save_name, Type, "Venn_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 3,height =2 )
+
+ggsave(Venn_plot_Reps, filename = paste(paste(save_name, Type, "Venn_Reps_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 4,height =4)
+
+ggsave(Cluster$HeatPlot_prow_SLWF_21, filename = paste(paste(save_name, Type, "Heatmap_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 8,height =5)
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=10, fig.height=9}
+#####################
+#BacteriaHeat & Venn# Deseq2
+#####################
+cowplot::plot_grid(Venn_plot, Venn_plot_Reps, labels = c("A", "B"), rel_heights = c(0.8,1), rel_widths = c(0.8,1),ncol = 2) -> part_1
+cowplot::plot_grid(part_1, Cluster$HeatPlot_prow, labels = c("", "C"), ncol = 1, rel_heights = c(0.5,1) ) -> part_2
+ggsave(part_2, filename = paste(paste(save_name, Type, "Venn_Deseq2_Heat", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10,
+height = 9)
+part_2
+
+```
+
+## 8.3 Supplementary Plots 
+
+```{r, message=FALSE, warning=FALSE, fig.width=12, fig.height=9}
+###########
+#S1 Figure#
+###########
+########################################
+#Species_Accumulation & Core Microbiome#
+########################################
+ggsave(Species_Accumulation_raw, 
+       filename = paste(paste(save_name, Type, "Species_Accumulation_raw_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png',
+       dpi=300, width = 6, height = 4)
+ggsave(Species_Accumulation_Filtered, 
+       filename = paste(paste(save_name, Type, "Species_Accumulation_Filtered_plot", Date, sep="_"), ".png", sep=""), path = pathPlots ,
+       device='png', dpi=300, width = 6, height = 4)
+ggsave(Core_Alpha_Diversity_BarPlot, 
+       filename = paste(paste(save_name, Type, "Core_Alpha_Diversity_BarPlot_plot", Date, sep="_"), ".png", sep=""), path = pathPlots ,
+       device='png', dpi=300, width = 8, height = 6)
+ggsave(RelCoreAbundance_normalized_barplot, 
+       filename = paste(paste(save_name, Type, "RelCoreAbundance_normalized_barplot_plot", Date, sep="_"), ".png", sep=""), path = pathPlots ,
+       device='png', dpi=300, width = 5, height = 6)
+
+
+
+
+cowplot::plot_grid(Species_Accumulation_raw, Species_Accumulation_Filtered, labels = c("A", "B"), ncol = 2) -> part_1
+cowplot::plot_grid(Core_Alpha_Diversity_BarPlot, RelCoreAbundance_normalized_barplot, labels = c("C", "D"), ncol = 2, rel_widths = c(1,0.5)) -> Core_Microbiome_plot
+cowplot::plot_grid(part_1, Core_Microbiome_plot, labels = c("", ""), ncol = 1, rel_widths = c(0.5,1)) -> part_3
+ggsave(part_3, filename = paste(paste(save_name, Type, "RelCoreAbundance_Core_Microbiome_plot", Date, sep="_"), ".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 9)
+part_3
+
+
+
+```
+
+# -
+
+# 9 Final dataset
+
+```{r, message=FALSE, warning=FALSE}
+saveRDS(pslist, file.path(path_Output_16S,paste(paste(save_name,  "16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+pslist <- readRDS(file.path(path_Output_16S,paste(paste(save_name,  "16S_merge_Filter_ASV_besttax", Date, sep="_"), ".rds", sep="")))
+```
+

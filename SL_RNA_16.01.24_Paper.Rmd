@@ -1,0 +1,1849 @@
+---
+title: "SL_RNA_16.01.24"
+output: html_document
+date: "2024-01-16"
+---
+
+Steps: 
+  1. Install the required Packages when necessary
+  2. Adjust settings: Path
+  3. Read the provided 0.3 Files needed 
+  4. Read in the Functions file 0.4
+  5. Skip section 1 RNAseq completely, it has been done 
+  
+  
+# Zander Spational Analysis
+
+# 0 Global Setup 
+
+## 0.1 Path
+
+before you start: 
+.rs.restartR()
+
+```{r}
+GitClonePath <- "/Users/admin/Desktop/ElbeEstuarineZander"
+setwd(GitClonePath)
+```
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Input files from SL_Linux pipeline and addional Blasts
+path_Input_16S <-  paste(GitClonePath, "SL_Input_16S", sep="/")
+path_Input_RNA <- paste(GitClonePath, "SL_Input_RNA", sep="/")
+
+#Output of the individual Pipeline parts including .rds and .csv
+path_Output_16S <- paste(GitClonePath, "SL_Output_16S", sep="/")
+path_Output_RNA     <- paste(GitClonePath, "SL_Output_RNA", sep="/")
+path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
+
+#Output of all plots, the markdowns include only selections
+pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
+```
+
+## 0.2 Packages
+
+```{r,  Packages, message=FALSE, warning=FALSE, include=FALSE}
+# #install.packages("packrat")
+# packrat::init("/Users/admin/Desktop/R/SL_R2023")
+# R package management tools such as packrat or renv. These tools allow you to create isolated environments with specific versions of R and installed packages, ensuring reproducibility and avoiding conflicts with other packages installed in your system.
+# packrat::snapshot()
+
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "DESeq2",
+#   "AnnotationDbi", 
+#   "AnnotationHub", 
+#   "Biobase", 
+#   "GSEABase", 
+#   "DECIPHER", 
+#   "ComplexHeatmap", 
+#   "Biostrings", 
+#   "BiocParallel", 
+#   "BiocNeighbors", 
+#   "BiocFileCache", 
+#   "BiocBaseUtils", 
+#   "GO.db", 
+#   "GOSemSim", 
+#   "ShortRead", 
+#   "SummarizedExperiment", 
+#   "TreeSummarizedExperiment", 
+#   "phyloseq", 
+#   "tidyverse",
+#   "plyr",
+#   "dplyr",
+#   "DESeq2",
+#   "cowplot",
+#   "ggrepel",
+#   "PCAtools",
+#   "ComplexHeatmap",
+#   "WGCNA",
+#   "dada2",
+#   "ShortRead",
+#   "phyloseq",
+#   "factoextra",
+#   "microbiome", #clr transformation
+#   "mia",
+#   "clusterProfiler", 
+#   "GenomeInfoDbData"
+#   ), force =T)
+
+#New in this Part: 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install(c(
+#   "sva",
+#   "fgsea",
+#   "org.Hs.eg.db"
+#   ), force=T)
+```
+
+## 0.3 Files needed
+
+```{r, Files needed, message=FALSE, warning=FALSE}
+#############################
+#Feature Counts Output Files#
+SL_Gill_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Gill_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+
+SL_Liver_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Liver_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+
+##################################################
+#AnnotationFile Created in Sections 1.1.3 - 1.1.5#
+SLUCGeneManual <- read.csv2(file.path(path_Input_RNA, "SLUCGene-Manual-17.06.2023.csv"))[-1]
+SLUCOrgDb<- readRDS(file.path(path_Input_RNA, "SLUCOrgDb-2022.rds"))
+IDS<- read.table(file.path(path_Input_RNA, "ids_gene_ids.tsv"), header = FALSE, sep="\t")
+#############
+#Sample File#
+SAMDF<- read.table(file=file.path(path_Input_RNA, "SL_samplefile_04.01.2024.csv") ,sep=";",dec = ".")
+```
+
+## 0.4 Functions
+
+```{r,  message=FALSE, warning=FALSE, include=FALSE}
+#Source the SL_Functions.rmd placed in the working directory
+#noamross/source_rmd.R
+#https://gist.github.com/noamross/a549ee50e8a4fd68b8b1
+source_rmd = function(file, skip_plots = TRUE) {
+  temp = tempfile(fileext=".R")
+  knitr::purl(file, output=temp)
+
+  if(skip_plots) {
+    old_dev = getOption('device')
+    options(device = function(...) {
+      .Call("R_GD_nullDevice", PACKAGE = "grDevices")
+    })
+  }
+  source(temp)
+  if(skip_plots) {
+    options(device = old_dev)
+  }
+}
+source_rmd("SL_Functions_16.01.24_Paper.Rmd")
+```
+
+
+#-
+
+## 1 Import RNAseq data
+
+#### 1.1 Counts & create TPM
+
+```{r,  Counts, message=FALSE, warning=FALSE, include=FALSE} 
+#http://ny-shao.name/2016/11/18/a-short-script-to-calculate-rpkm-and-tpm-from-featurecounts-output.html
+rpkm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(counts) * 1e9}
+
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6}
+
+library(dplyr)
+library(tidyr)
+
+######
+#Gill#
+######
+SL_Gill_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Gill_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+rownames(SL_Gill_cnt) <-SL_Gill_cnt$Geneid
+for ( col in 1:ncol(SL_Gill_cnt)){
+    colnames(SL_Gill_cnt)[col] <-  sub("X.work.baz7490.Sander.Gill.", "", colnames(SL_Gill_cnt)[col])}
+for ( col in 1:ncol(SL_Gill_cnt)){
+    colnames(SL_Gill_cnt)[col] <-  sub("_Gill_trimmed.sorted.bam", "", colnames(SL_Gill_cnt)[col])}
+
+SL_Gill_tpm <- as.data.frame(SL_Gill_cnt %>%
+  gather(sample, cnt, 7:ncol(SL_Gill_cnt)) %>%
+  group_by(sample) %>%
+  mutate(tpm=tpm(cnt, Length)) %>%
+  dplyr::select(-cnt) %>%
+  spread(sample, tpm))
+rownames(SL_Gill_tpm) <-SL_Gill_tpm$Geneid
+SL_Gill_tpm <- SL_Gill_tpm [,-c(1:6)]
+head(SL_Gill_tpm,2)
+
+SL_Gill_cnt <- SL_Gill_cnt [,-c(1:6)]
+head(SL_Gill_cnt,2)
+
+#saveRDS(SL_Gill_tpm, file.path(path_Output_RNA, "SL_Gill_featurecounts_tpm_08.01.24.rds"))
+#saveRDS(SL_Gill_cnt, file.path(path_Output_RNA, "SL_Gill_featurecounts_counts_08.01.24.rds"))
+
+#######
+#LIVER#
+#######
+SL_Liver_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Liver_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+rownames(SL_Liver_cnt) <-SL_Liver_cnt$Geneid
+for ( col in 1:ncol(SL_Liver_cnt)){
+    colnames(SL_Liver_cnt)[col] <-  sub("X.work.baz7490.Sander.Liver.", "", colnames(SL_Liver_cnt)[col])}
+for ( col in 1:ncol(SL_Liver_cnt)){
+    colnames(SL_Liver_cnt)[col] <-  sub("_Liver_trimmed.sorted.bam", "", colnames(SL_Liver_cnt)[col])}
+
+SL_Liver_tpm <- as.data.frame(SL_Liver_cnt %>%
+  gather(sample, cnt, 7:ncol(SL_Liver_cnt)) %>%
+  group_by(sample) %>%
+  mutate(tpm=tpm(cnt, Length)) %>%
+  dplyr::select(-cnt) %>%
+  spread(sample, tpm))
+rownames(SL_Liver_tpm) <-SL_Liver_tpm$Geneid
+SL_Liver_tpm <- SL_Liver_tpm [,-c(1:6)]
+head(SL_Liver_tpm,2)
+
+SL_Liver_cnt <- SL_Liver_cnt [,-c(1:6)]
+head(SL_Liver_cnt,2)
+#saveRDS(SL_Liver_tpm, file.path(path_Output_RNA, "SL_Liver_featurecounts_tpm_08.01.24.rds"))
+#saveRDS(SL_Liver_cnt, file.path(path_Output_RNA, "SL_Liver_featurecounts_counts_08.01.24.rds"))
+```
+
+#### 1.2 Ribosomal Counts filtered Counts & create TPM
+
+Some comments on rRNA removal from poly-A enriched libraries, some rRNA genes were identified differentially expressed and were intially removed by this step
+
+https://www.biostars.org/p/419845/
+There's no reason to bother removing rRNA if (like most people) you're not quantifying it later. Usually one just looks at the percentage of reads in feature (e.g., with multiQC on the featureCounts output) and excludes outlier samples. That won't tell you that a sample was an outlier due to rRNA contamination, but that's rarely actionable information in and of itself (you'd still want to see it as an outlier in PCA).
+No, if you don't care about them then you should remove the counts from the matrix. Otherwise you're needless inflating the tests you're doing and deflating your power. The normalization should be robust to their presence, but if there's a LOT of rRNA contamination in one sample then that tends to cause issues with the normalization factors.
+
+https://www.biostars.org/p/415008/
+A properly depleted RNAseq should have less then 10% rRNA in it (as little as 2-3%). Normally the rRNA would be over 80-90%, thus your data already is depleted.
+While using the preprocessed reads, ribosomal RNA
+(rRNA) is removed with SortMeRNA v2.1b [22] when considering all of the available databases for
+https://www.genenames.org/data/genegroup/#!/group/848
+
+```{r,  Ribosomal Counts filter, message=FALSE, warning=FALSE, include=FALSE} 
+#http://ny-shao.name/2016/11/18/a-short-script-to-calculate-rpkm-and-tpm-from-featurecounts-output.html
+rpkm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(counts) * 1e9}
+
+tpm <- function(counts, lengths) {
+  rate <- counts / lengths
+  rate / sum(rate) * 1e6}
+
+library(dplyr)
+library(tidyr)
+
+######
+#Gill#
+######
+SL_Gill_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Gill_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+rownames(SL_Gill_cnt) <-SL_Gill_cnt$Geneid
+for ( col in 1:ncol(SL_Gill_cnt)){
+    colnames(SL_Gill_cnt)[col] <-  sub("X.work.baz7490.Sander.Gill.", "", colnames(SL_Gill_cnt)[col])}
+for ( col in 1:ncol(SL_Gill_cnt)){
+    colnames(SL_Gill_cnt)[col] <-  sub("_Gill_trimmed.sorted.bam", "", colnames(SL_Gill_cnt)[col])}
+
+SL_Gill_cnt$Geneid <- rownames(SL_Gill_cnt)
+SL_Gill_cntNoRibo <- dplyr::left_join(SL_Gill_cnt, SLUCGeneManual[c("Human_SYMBOL_Manual", "Geneid")])
+SL_Gill_cntNoRibo[grepl("ribosomal", SL_Gill_cntNoRibo$Human_SYMBOL_Manual),][c("Human_SYMBOL_Manual", "Geneid", "SLSU21BBEB1")]
+SL_Gill_cntNoRibo<- SL_Gill_cntNoRibo[!grepl("ribosomal", SL_Gill_cntNoRibo$Human_SYMBOL_Manual),]
+rownames(SL_Gill_cntNoRibo) <-SL_Gill_cntNoRibo$Geneid
+SL_Gill_cntNoRibo <- SL_Gill_cntNoRibo[-which(names(SL_Gill_cntNoRibo) %in% c("Human_SYMBOL_Manual"))]
+
+SL_Gill_NoRibo_tpm <- as.data.frame(SL_Gill_cntNoRibo %>%
+  gather(sample, cnt, 7:ncol(SL_Gill_cnt)) %>%
+  group_by(sample) %>%
+  mutate(tpm=tpm(cnt, Length)) %>%
+  dplyr::select(-cnt) %>%
+  spread(sample, tpm))
+rownames(SL_Gill_NoRibo_tpm) <-SL_Gill_NoRibo_tpm$Geneid
+SL_Gill_NoRibo_tpm <- SL_Gill_NoRibo_tpm[,-c(1:6)]
+head(SL_Gill_NoRibo_tpm,2)
+SL_Gill_cntNoRibo <- SL_Gill_cntNoRibo[,-c(1:6)]
+head(SL_Gill_cntNoRibo,2)
+
+saveRDS(SL_Gill_NoRibo_tpm, file.path(path_Output_RNA, "SL_Gill_featurecounts_tpm_NoRibo_08.01.24.rds"))
+saveRDS(SL_Gill_cntNoRibo, file.path(path_Output_RNA, "SL_Gill_featurecounts_countsNoRibo_08.01.24.rds"))
+
+#######
+#LIVER#
+#######
+SL_Liver_cnt <- read.table(file.path(path_Input_RNA, "featureCounts_SL_Liver_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+rownames(SL_Liver_cnt) <-SL_Liver_cnt$Geneid
+for ( col in 1:ncol(SL_Liver_cnt)){
+    colnames(SL_Liver_cnt)[col] <-  sub("X.work.baz7490.Sander.Liver.", "", colnames(SL_Liver_cnt)[col])}
+for ( col in 1:ncol(SL_Liver_cnt)){
+    colnames(SL_Liver_cnt)[col] <-  sub("_Liver_trimmed.sorted.bam", "", colnames(SL_Liver_cnt)[col])}
+
+SL_Liver_cnt$Geneid <- rownames(SL_Liver_cnt)
+SL_Liver_cntNoRibo <- dplyr::left_join(SL_Liver_cnt, SLUCGeneManual[c("Human_SYMBOL_Manual", "Geneid")])
+SL_Liver_cntNoRibo[grepl("ribosomal", SL_Liver_cntNoRibo$Human_SYMBOL_Manual),][c("Human_SYMBOL_Manual", "Geneid", "SLSU21BBEB1")]
+SL_Liver_cntNoRibo<- SL_Liver_cntNoRibo[!grepl("ribosomal", SL_Liver_cntNoRibo$Human_SYMBOL_Manual),]
+rownames(SL_Liver_cntNoRibo) <-SL_Liver_cntNoRibo$Geneid
+SL_Liver_cntNoRibo <- SL_Liver_cntNoRibo[-which(names(SL_Liver_cntNoRibo) %in% c("Human_SYMBOL_Manual"))]
+
+SL_Liver_NoRibo_tpm <- as.data.frame(SL_Liver_cntNoRibo %>%
+  gather(sample, cnt, 7:ncol(SL_Liver_cnt)) %>%
+  group_by(sample) %>%
+  mutate(tpm=tpm(cnt, Length)) %>%
+  dplyr::select(-cnt) %>%
+  spread(sample, tpm))
+rownames(SL_Liver_NoRibo_tpm) <-SL_Liver_NoRibo_tpm$Geneid
+SL_Liver_NoRibo_tpm <- SL_Liver_NoRibo_tpm[,-c(1:6)]
+head(SL_Liver_NoRibo_tpm,2)
+SL_Liver_cntNoRibo <- SL_Liver_cntNoRibo[,-c(1:6)]
+head(SL_Liver_cntNoRibo,2)
+
+saveRDS(SL_Liver_NoRibo_tpm, file.path(path_Output_RNA, "SL_Liver_featurecounts_tpm_NoRibo_08.01.24.rds"))
+saveRDS(SL_Liver_cntNoRibo, file.path(path_Output_RNA, "SL_Liver_featurecounts_countsNoRibo_08.01.24.rds"))
+```
+
+#### 1.3 Merge AnnotationDBs
+
+Sander genename matched with Danio and Human, writing Human Symbol where possible, writing full Genename else, LOC where uncharacterized. 
+
+This is an elaborate process to get everything working and the output is provided so dont run
+
+```{r,  Merge AnnotationDBs, message=FALSE, warning=FALSE, include = FALSE}
+
+# #remove.packages("BiocManager")
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# bio_pkgs <- c("AnnotationDbi", "org.Dr.eg.db", "org.HS.eg.db", "AnnotationHub", "ensembldb", "biocLite")
+# BiocManager::install(bio_pkgs)
+# 
+# #########################################################
+# #Create SLUC-GeneID-Dateaframe from featureCounts output#
+# #########################################################
+# SL_Gill_cnt <- read.table(file.path(path_Output_RNA, "featureCounts_SL_Gill_counts.txt"), sep="\t", stringsAsFactors=FALSE, header = T)
+# rownames(SL_Gill_cnt) <-SL_Gill_cnt$Geneid
+# SLUC<-SL_Gill_cnt[1:6]
+# SLUC$ENTREZID <- gsub("LOC", "", SLUC$Geneid)
+# length(grep("LOC", rownames(SLUC))) #16828 #50 % are LOC Numbers in the cnt
+# 
+# #####################
+# #Get Annotation Hubs#
+# #####################
+# biocLite("interactiveDisplayBase")
+# #library("ensembldb")
+# library("AnnotationDbi")
+# library("org.Dr.eg.db")
+# library("AnnotationHub")
+# library(tidyverse)
+# hub = AnnotationHub() #takes a while
+# query(hub,'sander')
+# columns(org.Dr.eg.db)
+# sander<-hub[["AH96284"]]     #sander this version can only be downlaodded with biocversion 3.14 and and older Version of R, the newer versions of the Org.DB are Ensemble Based and have less genes overall so we stick to the older Version for this.  #https://support.bioconductor.org/p/9147544/
+# query(hub,'Danio')
+# danio <-hub[["AH110774"]]     #danio 
+# query(hub,'Sapiens')
+# sapiens <-hub[["AH111575"]]   #sapiens 
+# keytypes(sander)
+# dr<- AnnotationDbi::select(org.Dr.eg.db, keys(org.Dr.eg.db), c("ENTREZID","GENENAME","SYMBOL"))
+# sl<- AnnotationDbi::select(sander, keys(sander), c("ENTREZID", "GENENAME","SYMBOL"))
+# hs<- AnnotationDbi::select(sapiens, keys(sapiens), c("ENTREZID","GENENAME","SYMBOL"))
+# sldr<-dplyr::left_join(sl, dr, by="GENENAME")
+# sldrhs<-dplyr::left_join(sldr, hs,  by="GENENAME")
+# 
+# ###########################
+# #Join SLUC by OrgDB Output#
+# ###########################
+# SLUC$SYMBOL.x <-rownames(SLUC)
+# sldrhs.SLUC<-plyr::match_df(sldrhs,SLUC)
+# sldrhs.SLUC.noduplicates<-sldrhs.SLUC[!duplicated(sldrhs.SLUC$SYMBOL.x),]
+# SLUC<-dplyr::left_join(SLUC,sldrhs.SLUC.noduplicates)
+# 
+# #########
+# #Renname#
+# #########
+# names(SLUC)[names(SLUC) == "ENTREZID.x"] <- "GID.sander"
+# names(SLUC)[names(SLUC) == "SYMBOL.x"] <- "Symbol.sander"
+# names(SLUC)[names(SLUC) == "ENTREZID.y"] <- "GID.danio"
+# names(SLUC)[names(SLUC) == "SYMBOL.y"] <- "Symbol.danio"
+# names(SLUC)[names(SLUC) == "ENTREZID"] <- "GID.homo"
+# names(SLUC)[names(SLUC) == "SYMBOL"] <- "Symbol.homo"
+# table(!is.na(SLUC$Symbol.homo))  #FALSE 26534  TRUE  6416 
+# table(!is.na(SLUC$Symbol.danio)) #FALSE 16771  TRUE 16179 
+# SLUC$Symbol.danioNoLoc<-SLUC$Symbol.danio
+# SLUC$Symbol.danioNoLoc<-gsub("LOC.*", NA,SLUC$Symbol.danioNoLoc) 
+# 
+# ##################################################################
+# #Replace fish GeneSymbols by HumanGeneSymbols where ever matching#
+# ##################################################################
+# SLUC<-SLUC %>% mutate(HsDrSL = coalesce(SLUC$Symbol.homo, SLUC$Symbol.danioNoLoc,SLUC$Symbol.sander)) #PUT homo Symbol if not NA, put Danio Symbol where no homo Symbol and no NA, put sander Symbol where NAs left
+# SLUC$HsDrSLGeneName<-SLUC$HsDrSL
+# SLUC$HsDrSLGeneName<-gsub("LOC.*", NA,SLUC$HsDrSLGeneName) #Replace LOC numbers from Sander with NA
+# SLUCOrgDb<-SLUC %>% mutate(HsDrSLGeneName = coalesce(SLUC$HsDrSLGeneName,SLUC$GENENAME, SLUC$Symbol.sander)) #put Genenames where NAs 
+# length(grep("LOC", SLUCOrgDb$Geneid))                #16828 LOCs without Symbol
+# length(grep("LOC", SLUCOrgDb$HsDrSLGeneName))        #7039LOCs without Symbol after joining with Danio and Human
+
+#saveRDS(SLUCOrgDb, file.path(path_Output_RNA, "SLUCOrgDb-2022.rds"))
+```
+
+#### 1.4 Blasts
+
+Include Blast results in the Annotation file 
+
+```{r,  Blasts, message=FALSE, warning=FALSE, include = FALSE}
+#Read in all Blasts done
+blasts <- list()
+for (file in list.files(file.path(path_Input_RNA,"SLUC-Blasts31.05.2022"))) {
+  a <- length(blasts)
+  dat <- read.table(file.path(path_Input_RNA, paste("SLUC-Blasts31.05.2022", file, sep="/")))
+  blasts[[a+1]] <-dat
+  names(blasts)[[a+1]] <- file }
+
+#Filter blast results for E and bit-score
+for (i in seq_along(blasts)) {
+  diam <- names(blasts[i])
+  
+  if (grepl("diamP", diam) == TRUE)  {
+  colnames <- c("prot_id",paste(diam, c("ID", "perctID", "E", "bit_score"), sep="_"))} else 
+    {colnames <- c("transcript_id",paste(diam, c("ID", "perctID", "E", "bit_score"), sep="_"))}
+  
+  blast <- blasts[[i]][names(blasts[[i]]) %in% c("V1", "V2", "V3", "V11", "V12")]
+  blasts[[i]] <- blast
+  colnames(blasts[[i]]) <- c("id", "ID", "perctID", "E", "bit_score")
+    print(diam)
+  print(paste("before filtering", dim(blasts[[i]])[1], sep=": "))
+  print(paste("after filtering", dplyr::filter(blasts[[i]], blasts[[i]]$E< 1e-6 & blasts[[i]]$bit_score > 50) %>% tally(), sep=": "))
+  blasts[[i]] <- dplyr::filter(blasts[[i]], blasts[[i]]$E< 1e-6 & blasts[[i]]$bit_score > 50)
+
+  colnames(blasts[[i]]) <- colnames
+}
+# [1] "diamX_HumanEMBL_SLUC_usen.outfmt6"
+# [1] "before filtering: 54345"
+# [1] "after filtering: 53058"
+
+lapply(blasts, function(x) dim(x))
+lapply(blasts, function(x) head(x,2))
+
+#Download the gene tsv file from the SLUC Genome
+#IDS<- read.table(file.path(path_Output_RNA, "ids_gene_ids.tsv"), header = FALSE, sep="\t")
+names(IDS) <- c("transcript_id", "sander.id")
+
+#Filtering the first hits from Blast whe
+blasts2 <- list()
+for (i in seq_along(blasts)) {
+  a <- length(blasts2)
+  diam <- names(blasts[i])
+
+  trial <- dplyr::left_join(IDS[c("transcript_id")], blasts[[i]])
+  trial <- trial[!is.na(trial[names(trial) %in% paste(diam, "_ID", sep="")]),]
+  trial <- mutate(trial, combined = paste0(trial$transcript_id, ":", trial[[paste(diam, "_ID", sep="")]]))
+  print(length(trial$combined))
+  print(length(unique(trial$combined)))
+  
+  trial$Interest <- trial[[paste(diam, "_E", sep="")]]
+  trial <- trial %>% 
+  group_by(combined) %>% 
+  filter(rank(Interest, ties.method="first")==1)
+  
+  trial <- as.data.frame(trial)
+  trial <- trial[,-which(names(trial) %in% c("combined", "Interest"))]
+  
+  blasts2[[a+1]] <- trial 
+  names(blasts2)[a+1] <- diam
+}
+
+#Just remove the non fitting blassts as they anyways show bad results
+blasts2<- blasts2[lapply(blasts2, function(x) dim(x)[1])>0]
+lapply(blasts2, function(x) head(x,2))
+
+#Collapse List of blasts to one dataframe
+library(dplyr)
+blasts3 <-  Reduce(dplyr::left_join, blasts2)
+df <- dplyr::left_join(IDS, blasts3)
+
+
+df$diamX_HumanEMBL_UniProtSymbol
+#Clean up the blasts 
+df<-  df %>%  
+  separate(diamX_HumanEMBL_SLUC_usen.outfmt6_ID, c("Garbage", "diamX_HumanEMBL_Uniprot_id", "diamX_HumanEMBL_UniProtSymbol"), sep = "\\|")  %>%
+  dplyr::select(-Garbage) 
+df$diamX_HumanEMBL_UniProtSymbol <-sub('_.*', '', df$diamX_HumanEMBL_UniProtSymbol)
+#length(unique(na.omit(df$diamP_HumanEMBL_UniProtSymbol)))
+
+df$blastx_UniProtSymbol <-sub('_.*', '', df$"blastx-SLUC-Uniprot-07-06-22.outfmt6_ID")
+
+df$sander.gene <-gsub("\\[gene=", '', df$sander.id )
+df$sander.gene <-gsub("\\]", '', df$sander.gene)
+
+#df <- df %>% mutate(MixID = coalesce(diamX_HumanEMBL_UniProtSymbol,
+#                               blastx_UniProtSymbol, 
+#                               sander.gene))
+
+dim(df)
+length(grep("LOC", df$MixID)) #2187
+length(unique(na.omit(df$MixID))) #15975
+
+####################################
+#Adding Genome Blasts and SLUCOrgDB#
+####################################
+#SLUCOrgDb<- readRDS(file.path(path_Output_RNA, "SLUCOrgDb-2022.rds"))
+print(paste("genes from SLUC Genome:", dim(SLUCOrgDb)[1]))
+SLUCtranscriptvariant <- dplyr::left_join(SLUCOrgDb,df,  by=c("Geneid" = "sander.gene"))
+print(paste("Blast hits for all transcript variants from SLUC Genome:", dim(SLUCtranscriptvariant)[1]))
+SLUCGene <- SLUCtranscriptvariant %>%
+     dplyr::group_by(Geneid) %>%
+     dplyr::filter(rank(`diamX_HumanEMBL_SLUC_usen.outfmt6_E`, ties.method = "first") == 1)
+print(paste("Best blast hit per gene taken from blasts of transcript variants:", dim(SLUCGene)[1]))
+
+####################################################
+#Translate into gene names and Entrez IDs for Human#
+####################################################
+#Here we take now the Uniprot-IDs from the diamX_HumanEMB (eg. Q96S42) and translate them into the Entriz-IDs and NCBI-Genenames, 
+#the Uniprot gene names (eg. "HARB1") does not help much it is not in the right format (compare in gene cards) so downstream we can not work with them in GSEA or enrichment Analyses
+SLUCGene<- as.data.frame(SLUCGene)
+SLUCGene$rowname <- SLUCGene$Geneid
+require("org.Hs.eg.db")
+Entrez <- AnnotationDbi::select(org.Hs.eg.db, SLUCGene$diamX_HumanEMBL_Uniprot_id, c("ENTREZID", "SYMBOL"), "UNIPROT")
+
+names(Entrez) <- c("diamX_HumanEMBL_Uniprot_id", "HUman-ENTREZID", "Human-SYMBOL")
+
+SLUCGene <- dplyr::left_join(SLUCGene, Entrez[!duplicated(Entrez$`diamX_HumanEMBL_Uniprot_id`),], by="diamX_HumanEMBL_Uniprot_id")
+
+SLUCGene <-SLUCGene   %>% mutate(MixSymbol = coalesce(`Human-SYMBOL`,  
+                              HsDrSLGeneName))
+length(!is.na(SLUCGene$`Human-SYMBOL`)) #FALSE 22203 TRUE 10747
+length(grep("LOC",SLUCGene$MixSymbol))  #6755
+
+#write.csv2(SLUCGene, file.path(path_Output_RNA_Annotation, "SLUCGene-17.06.2023.csv"))
+```
+
+#### 1.5 Manual Curation
+
+The Output from multiple blasts was manually curated by checking LOCnumbers on ncbi, blasting sequences manually taking only hits with query cover >80%, percent Ident >80% and significant E value
+
+```{r,  Manual Curation,  message=FALSE, warning=FALSE, include = FALSE}
+#write.csv2(SLUCGene, file.path(path_Output_RNA_Annotation, "SLUCGene-Manual-17.06.2023.csv"))
+
+length(grep("LOC", SLUCGene$Symbol.sander)) #16828
+length(grep("LOC", SLUCGene$Human_SYMBOL_Manual)) #6553
+```
+
+#-
+
+## 2 Setup 
+
+```{r,  message=FALSE,warning=FALSE,include=FALSE} 
+#############################################################
+#Date of the Analysis for save-names#
+Date <- "16.01.2024"
+
+set.seed(123)
+Species    <- "SL"
+Year       <- "2021"
+Season     <- "Summer"
+Type       <- "RNA"
+Analysis   <- "DEA"
+alpha      <- 0.05
+OperatingSystem <- "Windows"
+save_name <- paste(Species,Year,Season,sep = "_")
+paste0(file.path(path_Output_RNA, "DEA-GSEA_"), save_name, "_.RData")
+##############################################################
+
+###########################################
+#Differential Abundance Testing Thresholds#
+LFCThresholds <- c(1, 0.05)
+variable <- "Replicates"
+###########################################
+
+VariableOrder<-c("SLSU21MG", "SLSU21BB", "SLSU21SS", "SLSU21ML", "SLSU22ML")
+LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand","Muehlenberger Loch")
+
+OutlineColor <- "grey20"
+Units <- c("Temperature" = "°C","pH" = "", "Salinity" = "psu", "O2Sat" = "%", "SecchiDepth" = "cm", "Age" = "years", "Cortison" = "ng/g", "Cortisol" = "ng/g", "HSI" = "Hepatosomatic Index", "GSI" = "Gonadosomatic Index", "SSI" = "Splenosomatic Index", "FultonK" = "Condition Index", "Length" = "cm", "Turbidity" = "NTU", "O2" = "mg/L")
+
+#############
+#Sample File#
+#############
+#Import samplefile and filter for samples with successful 16S sequencing
+
+SAMDF$fLoc          <- as.factor(SAMDF$Loc)
+SAMDF$fSpecies      <- as.factor(SAMDF$Species)
+SAMDF$fCruise       <- as.factor(SAMDF$Cruise)
+SAMDF$fReplicates   <- as.factor(SAMDF$Replicates)
+SAMDF$fSeason       <- as.factor(SAMDF$Season)
+SAMDF$fSex          <- as.factor(SAMDF$Sex)
+SAMDF$fAge          <- as.factor(SAMDF$Age)
+
+SAMDF <- SAMDF %>% mutate(Maturity = case_when(
+                    (Species== "SL" & Length >= 37.2) ~ "Adult", 
+                    (Species== "SL" & Length < 37.2) ~ "Juvenile"))
+
+SAMDF$HSI     <- SAMDF$LiverWeight/SAMDF$Weight*100
+SAMDF$SSI     <- SAMDF$SpleenWeight/SAMDF$Weight*100
+SAMDF$GSI     <- SAMDF$GonadeWeight/SAMDF$Weight*100
+SAMDF$FultonK <-  (100*SAMDF$Weight/(SAMDF$Length/10)^3)
+
+cat(paste(shQuote(dplyr::filter(SAMDF, Kind =="Fish" &  Species == "SL" & RNAseq == "yes" )$SampleID, type="cmd"), collapse=", ")) #Gives you the Sample names in way that you can use the Output straigt in R
+
+Samples_SL<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2", "SLSU21MGEB3",  "SLSU21MGEB4", "SLSU21MGEB5", "SLSU21MGEB7", 
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7", 
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5", "SLSU21SSEB6",  "SLSU21SSEB7", "SLSU21SSEB9", 
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+Samples_RNA_Gill<-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4", "SLSU21MGEB5", "SLSU21MGEB7", 
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7", 
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9", 
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9") 
+
+Samples_RNA_Liver <-c(
+  "SLSU21MGEB1", "SLSU21MGEB2",                "SLSU21MGEB4", "SLSU21MGEB5", "SLSU21MGEB7", 
+  "SLSU21BBEB1", "SLSU21BBEB2", "SLSU21BBEB4", "SLSU21BBEB6", "SLSU21BBEB9", "SLSU21BBEB7", 
+  "SLSU21SSEB2", "SLSU21SSEB3", "SLSU21SSEB5",                "SLSU21SSEB7", "SLSU21SSEB9", 
+  "SLSU21MLEB1", "SLSU21MLEB2", "SLSU21MLEB5", "SLSU21MLEB6", "SLSU21MLEB7", "SLSU21MLEB9")
+
+#"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+#"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+
+
+SAMDF_RNA_Gill           <- SAMDF[SAMDF$SampleID %in% Samples_RNA_Gill,]
+rownames(SAMDF_RNA_Gill) <- SAMDF_RNA_Gill$SampleID
+SAMDF_RNA_Gill<-SAMDF_RNA_Gill %>% arrange(factor(rownames(SAMDF_RNA_Gill), levels = Samples_RNA_Gill))
+
+SAMDF_RNA_Liver           <- SAMDF[SAMDF$SampleID %in% Samples_RNA_Liver,]
+rownames(SAMDF_RNA_Liver ) <- SAMDF_RNA_Liver$SampleID
+SAMDF_RNA_Liver <-SAMDF_RNA_Liver  %>% arrange(factor(rownames(SAMDF_RNA_Liver), levels = Samples_RNA_Liver))
+
+table(SAMDF_RNA_Gill[paste(variable)])
+table(SAMDF_RNA_Liver[paste(variable)])
+```
+
+#-
+
+## 2.1 Physiology
+
+### 2.1.1 Variable Boxplots
+
+Boxplots of different physiological measurements 
+
+### - Figure 2 D
+
+```{r,  message=FALSE, warning=FALSE} 
+
+# ID	Name	Abbreviation	Lat	Long	Description
+# 1.1	Medemgrund	MG	53.8363	8.88777	Ekm 712 close to inlet of Medem
+# 1.2	Brunsbüttel	BB	53.88742	9.19429	Ekm 694 close to Brunsbüttel Ports
+# 1.3	Schwarztonnensand	SWS	53.71442	9.46976	Ekm 665 east of Schwarztonnensand on territorium of NDS
+# 1.4	Twielenfleth	TW	53.60921	9.56536	Ekm 651 close to Twielenfleth Leuchtfeuer
+# 1.5	Mühlenberger Loch	ML	53.54907	9.82338	Ekm 633 upfront Airbus Area
+
+
+
+SAMDFSL         <- filter(SAMDF, Species == "SL")
+SAMDFSL <- SAMDFSL[SAMDFSL$SAMPLE %in% Samples_SL, ]
+SAMDFSL <- SAMDFSL %>% mutate(Ekm = case_when(
+                    (Loc== "Medem Grund") ~ "MG Ekm-713", 
+                    (Loc== "Brunsbuettel") ~ "BB Ekm-692", 
+                    (Loc== "Schwarztonnen Sand") ~ "SS Ekm-665", 
+                    (Loc== "Muehlenberger Loch") ~ "ML Ekm-633")
+                    )
+Ekm_labels <- as_labeller(c(
+  'Medem Grund'="MG Ekm-713",
+  'Brunsbuettel'="BB Ekm-692",
+  'Schwarztonnen Sand'="SS Ekm-665",
+  'Muehlenberger Loch'="ML Ekm-633"
+))
+samdf <- list("SAMDFSL" = SAMDFSL)
+Variables<- c("Length", "Weight","Age", "HSI", "SSI", "FultonK") 
+for (i in names(samdf)[grepl("SAMDFSL", names(samdf))]){
+  require(EnvStats)
+  require(ggrepel)
+  require(cowplot)
+  tryCatch({
+  LocOrder=c("Medem Grund", "Brunsbuettel", "Schwarztonnen Sand", "Muehlenberger Loch")
+  g       <- paste(i) 
+  gg      <- sub('SAMDF', '', g)
+  for (ii in Variables) {
+    tryCatch({
+    FILENAME    <- paste(paste(save_name, Type, gg, ii, "Boxplot", sep="_"),".png", sep="")
+    
+    ggg     <- paste(ii) 
+    
+    p <-ggplot(samdf[[i]], aes(x=Loc,y=samdf[[i]][[ii]],colour=fReplicates)) +
+    geom_boxplot(aes(fill=samdf[[i]]$Species)) + atheme + #awhite2 + # geom_jitter(width=0.2) +
+    scale_color_manual(values= ggplot2::alpha(col.Palette[[gg]], 1)) +    
+    scale_fill_manual(values= ggplot2::alpha(col.Palette$col.Palette.species[[gg]], 0.4)) +
+    geom_text_repel(aes(label = SampleID), data = samdf[[i]],   size=3)  +
+    facet_grid(. ~ factor(fLoc, levels=LocOrder), labeller = Ekm_labels, drop=TRUE,scale="free",space="free_x") +
+    labs(x = "", y = noquote(paste(ggg, " [", noquote(Units[ii]), "]", sep = ""))) + #"")
+    #ggtitle(paste(gg,  ggg, "over all sampling sites and seasons (Summer, Winter, Spring,)"))
+    theme(legend.position = "none") +
+    guides(fill=guide_legend(title="Species")) +
+    stat_n_text(size = 4, color = "grey20")+ #white
+    theme(
+         panel.background = element_rect(fill='transparent'),
+         plot.background = element_rect(fill='transparent', color=NA),
+         #panel.grid.major = element_blank(),
+         #panel.grid.minor = element_blank(),
+         legend.background = element_rect(fill='transparent'),
+         legend.box.background = element_rect(fill='transparent') ) 
+    g <- ggplot_gtable(ggplot_build(p))
+    stripr <- which(grepl('strip-t', g$layout$name))
+    fills <- ggplot2::alpha(col.Palette$col.Palette.LOC, 0.4)
+    prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+    title <- ggdraw() + draw_label_themeRK(paste("Sander Lucioperca", ggg, "per Location"), element = "plot.title",x = 0.05, hjust = 0,     vjust = 0.5) #draw_label_themeRKwhite
+    #subtitle <- ggdraw() + draw_label_themeRKwhite(paste(), 
+    #                       element ="plot.subtitle",x = 0.05, hjust = 0, vjust = 1)
+    #quartz()
+    AAA<- cowplot::plot_grid(title, prow, ncol = 1, rel_heights = c(0.05, 0.98))
+    plot(AAA)
+    ggsave(AAA, filename = FILENAME, path = pathPlots, device='png', dpi=300, width = 4.5,
+    height = 4)
+    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+```
+
+### 2.1.2 Physio PCA
+
+PCAplot of different physiological and abiotics factors as overview
+
+```{r,  message=FALSE, warning=FALSE}
+##########################
+#Zander Physiological PCA#
+##########################
+library(factoextra)
+library(cowplot)
+dat1 <- SAMDF[,names(SAMDF) %in% c("Species", "SampleID", "Loc", "Salinity", "O2", "Temperature", "SecchiDepth", "HSI",  "FultonK", "Weight", "Length", "SSI")] # , 
+rownames(dat1) <- dat1$SampleID 
+dat1 <- na.omit(dat1)
+res.pca <- prcomp(dat1[,-which(names(dat1) %in% c("Species", "Loc", "SampleID"))],  scale = TRUE)
+p <- fviz_eig(res.pca, addlabels = TRUE, ylim = c(0, 50), linecolor = "white",) +
+      theme_minimal() + awhite + theme(axis.title.x = element_blank()) +
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+      prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+      A<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+      ggsave(A, filename = paste(paste(save_name, Type, "PCA-eig", unique(dat1$Species), sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 4,
+      height = 4)
+      
+p <- fviz_pca_biplot(res.pca, 
+                label="all", 
+                habillage=dat1$Loc,
+                addEllipses=TRUE, ellipse.level=0.95, ellipse.type = "confidence",
+                palette = col.Palette$col.Palette.Locs,  legend.title = "Seasons", 
+                repel = TRUE, 
+                col.var = "red", alpha.var = 1, col.quanti.sup = "blue") +
+                labs(title ="Bplit PCA of Physiological and Abiotic data") +
+                theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+                theme(
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()) 
+      prow <- cowplot::plot_grid(p, labels = c(""), ncol = 1)
+      A<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+      ggsave(A, filename = paste(paste(save_name, Type, "Physio-PCA", unique(dat1$Species), sep="_"),".png", sep=""), path = pathPlots , device='png',
+             dpi=300, width = 10,height = 10)  
+      
+                 
+      
+ 
+```
+
+#-
+
+## 3 Differential Expression
+
+### 3.1 DESeq2 
+
+no Age + Sex as all Individuals are juveniles of LS1
+
+```{r,  message=FALSE, warning=FALSE}
+tpmLiver <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_tpm_NoRibo_08.01.24.rds"))
+cntLiver <- readRDS(file.path(path_Output_RNA, "SL_Liver_featurecounts_countsNoRibo_08.01.24.rds"))
+
+tpmGill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_tpm_NoRibo_08.01.24.rds"))
+cntGill <- readRDS(file.path(path_Output_RNA, "SL_Gill_featurecounts_countsNoRibo_08.01.24.rds"))
+
+cntLiver   <- cntLiver[,Samples_RNA_Liver] 
+cntGill    <- cntGill[,Samples_RNA_Gill] 
+#TPM Data
+tpmLiver   <- tpmLiver[,Samples_RNA_Liver] 
+tpmGill    <- tpmGill[,Samples_RNA_Gill]
+
+library(DESeq2)
+ddsLiver         <- DESeqDataSetFromMatrix(countData = cntLiver,
+                              colData = SAMDF_RNA_Liver,
+                              design = as.formula(paste("~",variable)))
+
+ddsGill          <- DESeqDataSetFromMatrix(countData = cntGill,
+                              colData = SAMDF_RNA_Gill,
+                              design = as.formula(paste("~",variable)))
+
+#vst-Transformation
+vstGill   <- vst(ddsGill, blind = FALSE)
+vstLiver  <- vst(ddsLiver, blind = FALSE)
+
+#DESeq2
+ddsGill  <- DESeq(ddsGill)
+ddsLiver <- DESeq(ddsLiver)
+
+resGill  <- results(ddsGill)
+resLiver <- results(ddsLiver)
+
+
+for (LFCThreshold in LFCThresholds) {
+  print(paste("LFCThreshold", LFCThreshold))
+  
+  name <-paste0(Species, sep = "")
+  assign(paste0(Species, sep = ""), list())
+  .GlobalEnv[[name]] <-list("vstLiver"= vstLiver, 
+                          "vstGill"=  vstGill,  
+                          "ddsLiver"= ddsLiver, 
+                          "ddsGill"=  ddsGill,
+                          "tpmLiver"= tpmLiver, 
+                          "tpmGill" = tpmGill)
+
+  for (i in names(.GlobalEnv[[name]])[grepl("dds", names(.GlobalEnv[[name]]))]) {
+  require(DESeq2)
+  require(tidyverse)
+  require(plyr)
+  require(dplyr)
+    
+
+  a       <- length(.GlobalEnv[[name]])
+  g       <- paste(i)
+  gg      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  name2   <- .GlobalEnv[[name]][names(.GlobalEnv[[name]])[grepl(paste(gg), names(.GlobalEnv[[name]]))]]
+  vst     <- as.data.frame(assay(name2[[names(name2)[grepl("vst", names(name2))]]]))
+  
+  #Selection of right Samplefile
+  if (gg == "Gill" ) {
+  SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+  
+  #Selection of Comparisons
+  VariableOrder<-VariableOrder
+  A <- as.data.frame(t(combn(SAMDF %>% 
+  arrange(factor(Replicates, levels = VariableOrder)) %>% 
+  pull(paste(variable)) %>% 
+  unique(),2)))
+  A$V3<-Reduce(function(...) paste(..., sep = "-"), A)
+  
+  mylist <- list() #create an empty list
+  for (i in 1:nrow(A)) {
+  res <- results(.GlobalEnv[[name]][[g]], lfcThreshold = LFCThreshold, alpha=0.05, contrast=c(variable,A[i,1],A[i,2]))
+  mylist[[i]] <- res 
+  names(mylist)[[i]] <- A[i,3]}
+  
+  mylist2 <-list()
+  for (x in names(mylist)) {
+  mylist2[[x]]<-dplyr::left_join(rownames_to_column(as.data.frame(mylist[[x]])),  
+                          rownames_to_column(as.data.frame(vst[rownames(vst) %in%
+                          rownames(as.data.frame(mylist[[x]])),])))
+
+  mylist2 <- lapply(mylist2, function(y) {y[which(y$padj < alpha),]})}
+  
+  name2 <-paste0("res", gg, sep = "")
+  assign(paste0("res", gg, sep = ""), list())
+  .GlobalEnv[[name2]] <-lapply(mylist2, function(z){z[order(z$padj),]})
+  
+ .GlobalEnv[[name]][[a+1]] <- .GlobalEnv[[name2]]
+  names( .GlobalEnv[[name]])[[a+1]] <- paste("res", sub("dds", "\\1", g), sep="")
+ 
+  #####################
+  #Add gene Annotation#
+  #####################
+  for (i in names(.GlobalEnv[[name]])[grepl("res", names(.GlobalEnv[[name]]))]) {
+    for (ii in names(.GlobalEnv[[name]][[i]])) {
+      #print(head(.GlobalEnv[[name]][[i]][[ii]],1))
+      .GlobalEnv[[name]][[i]][[ii]] <- dplyr::left_join(.GlobalEnv[[name]][[i]][[ii]], SLUCGeneManual)
+      .GlobalEnv[[name]][[i]][[ii]]$X.gene_id <- .GlobalEnv[[name]][[i]][[ii]]$rowname
+      .GlobalEnv[[name]][[i]][[ii]]$rowname <- .GlobalEnv[[name]][[i]][[ii]]$Human_SYMBOL_Manual
+      rownames(.GlobalEnv[[name]][[i]][[ii]]) <- make.unique(.GlobalEnv[[name]][[i]][[ii]]$rowname, sep = "_")
+      #print(head(.GlobalEnv[[name]][[i]][[ii]],1))
+      }
+    }
+
+  ###########
+  #Save Data#
+  ###########
+  saveRDS(.GlobalEnv[[name]], file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", LFCThreshold, sep=""), Date, sep="_"), ".rds", sep=""))))
+  }
+}
+
+  ###########
+  #Read Data#
+  ###########
+#Load the data with LFC Threshold 0.05
+LFCThreshold <- 0.05
+name <-paste0(Species, sep = "")
+assign(paste0(Species, sep = ""), list()) 
+.GlobalEnv[[name]]<-readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "0.05", sep=""), Date, sep="_"), ".rds", sep=""))))
+```
+
+### 3.2  PCA
+
+#### 3.2.1 Overview PCA
+
+PCA plot of vst-tranformed counts followed by an overview PCA analysis to allow outlier identification and drivers in gene expression
+
+```{r,  message=FALSE,warning=FALSE}
+##################
+# SampleDist PCAs#
+##################
+for (i in names(.GlobalEnv[[name]])[grepl("vst", names(.GlobalEnv[[name]]))]){
+  require(plyr)
+  require(ggrepel) 
+  require(cowplot)
+  if (OperatingSystem == "Mac" ) {
+      quartz() }
+  tryCatch({
+  g       <- paste(i) 
+  gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  A<-pcaplotRK3(.GlobalEnv[[name]][[i]],intgroup = c("Replicates"), pcX = 1, pcY = 2, title="",ellipse = TRUE,     ellipse.prob = 0.5) +
+  scale_fill_manual(values=col.Palette$SL) + #col.Palette.SeqCenter #col.Palette.Cruises
+  scale_color_manual(values=col.Palette$SL) + atheme +
+  theme_minimal() + awhite + theme(axis.title.x = element_blank()) +
+  theme(
+        panel.grid.major = element_line(colour = "grey50"), 
+        panel.grid.minor = element_line(colour = "grey50"))
+  prow <- cowplot::plot_grid(A, labels = c(""), ncol = 1)
+  title <- ggdraw() + draw_label_themeRKwhite(paste(Species,  gg, Type), element = "plot.title",x = 0.05, hjust = 0,    vjust = 1)
+  subtitle <- ggdraw() + draw_label_themeRKwhite(paste("vst-PCA", "with",       ... = 
+  length(rownames(.GlobalEnv[[name]][[i]])),"genes",sep = " "), element = "plot.subtitle",x = 0.05, hjust = 0,   
+  vjust = 1)
+  A<- cowplot::plot_grid(title, subtitle, prow, ncol = 1, rel_heights = c(0, 0.05, 0.989))
+  ggsave(A, filename = paste(paste(save_name, Type, gg, "PCA", sep="_") ,".png", sep=""), path = pathPlots , device='png', dpi=300, width = 7,
+  height = 7)
+  plot(A)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+```
+
+#### 3.2.2 PCA Overview Analysis
+
+Getting an overview of drivers in gene expression 
+
+```{r,  message=FALSE,warning=FALSE}
+##########
+#PCAtools#
+##########  
+#All Code Adapted from: 
+#https://github.com/kevinblighe/PCAtools 
+#https://bioconductor.org/packages/devel/bioc/vignettes/PCAtools/inst/doc/PCAtools.html
+
+for (i in names(.GlobalEnv[[name]])[grepl("vst", names(.GlobalEnv[[name]]))]){
+  require(plyr)
+  require(dplyr)
+  require(ggrepel) 
+  require(cowplot)
+  require(PCAtools)
+
+  tryCatch({
+  g       <- paste(i) 
+  gg      <- sub('...', '', g)  
+
+  metadata <- colData(.GlobalEnv[[name]][[i]])
+  metadata <- metadata[c("Replicates", "Species", "SampleID",  "Loc", "Salinity", "O2", "Temperature", "SecchiDepth", "HSI",  "FultonK", "Weight", "Length", "SSI")]
+
+  #We join in the the SLUCGeneManual-Annotations but have to make them unique as they could otherwise not become rownames which is   necessary for the PCAplot
+  
+  vstData <- as.data.frame(assay(.GlobalEnv[[name]][[i]]))
+  vstData$rowname <- rownames(vstData)
+  vstData  <-dplyr::left_join(vstData, SLUCGeneManual)
+  rownames(vstData) <- make.unique(vstData$Human_SYMBOL_Manua, sep = "_")
+  vstData <- vstData[colnames(vstData) %in% rownames(metadata)]
+  
+ p <- PCAtools::pca(vstData, metadata = metadata, removeVar = 0.1)
+ 
+  screeplot(p, axisLabSize = 18, titleLabSize = 22)
+ P <-  biplot(p,
+              x = "PC1", y = "PC2",
+      showLoadings = TRUE,
+      ntopLoadings = 10, 
+      boxedLoadingsNames = TRUE,
+      fillBoxedLoadings = "white", 
+      lengthLoadingsArrowsFactor = 1,
+      sizeLoadingsNames = 4,
+      colLoadingsNames = 'red4',
+      colLoadingsArrows = "red4",
+      #boxedLabels = T,  
+      #other parameters
+      lab = NULL,
+      colby = "Replicates", colkey = col.Palette$SL,
+      hline = 0, vline = c(-25, 0, 25),
+      vlineType = c('dotdash', 'solid', 'dashed'),
+      gridlines.major = FALSE, gridlines.minor = FALSE,
+      pointSize = 6,
+      legendPosition = 'left', legendLabSize = 14, legendIconSize = 8.0,
+     # shape = 'Grade', shapekey = c('Grade 1'=15, 'Grade 2'=17, 'Grade 3'=8),
+      drawConnectors = FALSE,
+      title = paste('PCA bi-plot', Species,  gg, Type, sep=" "),
+      subtitle = 'PC1 versus PC2') + # caption = '27 PCs ≈ 80%' +
+      theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+      theme( panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+      prow <- cowplot::plot_grid(P, labels = c(""), ncol = 1)
+      A <- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+      plot(A)
+      ggsave(A, filename = paste(paste(save_name, Type, gg, "Gene-BiploPCA", sep="_") ,".png", sep=""), path = pathPlots , 
+             device='png', dpi=300, width = 10,height = 6)
+
+      
+    ###################      
+    #PairsPlot of PCAs#
+    ###################
+    PP<- pairsplotRK(p,
+    components = getComponents(p, c(1:10)),
+    triangle = TRUE, trianglelabSize = 12,
+    hline = 0, vline = 0,
+    pointSize = 0.4,
+    gridlines.major = FALSE, gridlines.minor = FALSE,
+    colby = "Replicates", colkey = col.Palette$SL, plotaxes = FALSE, #title = 'Pairs plot'
+    margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm')) +
+    theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+    theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +
+    theme(text = element_text(colour = OutlineColor))
+    prow <- cowplot::plot_grid(PP, labels = c(""), ncol = 1)
+    AA<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+    ggsave(AA, bg='transparent', filename = paste(paste(save_name, Type, gg, "Gene-PairsPlorPCA", sep="_") ,".png", sep=""), path = pathPlots , 
+             device='png', dpi=300, width = 10,height = 10)
+    plot(AA)
+    
+    
+   
+    ######################     
+    #PlotLoadings of PCAs#
+    ######################    
+    PL <- plotloadingsRK(p,
+    rangeRetain = 0.05,
+    labSize = 4.0,
+    #title = 'Loadings plot',
+    #subtitle = 'PC1, PC2, PC3, PC4, PC5',
+    caption = 'Top 5% variables',
+    shape = 21,
+    col = c('blue', 'pink'),
+    drawConnectors = TRUE) +
+    theme_minimal() + atheme + theme(axis.title.x = element_blank()) +
+    theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +
+    theme(text = element_text(colour = OutlineColor)) 
+    prow <- cowplot::plot_grid(PL, labels = c(""), ncol = 1)
+    AA<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+    ggsave(AA, bg='transparent', filename = paste(paste(save_name, Type, gg, "Gene-PlotLoadingsPCA", sep="_") ,".png", sep=""), path = pathPlots , 
+             device='png', dpi=300, width = 10,height = 5)
+    plot(PL)
+    
+    
+
+    ##################
+    #Eigencor of PCAs#
+    ################## 
+    metavarsSL <- c("Salinity", "O2","Temperature", "SecchiDepth", "HSI",  "FultonK", "Weight","Length","SSI")
+    EC<- eigencorplot(p,
+    components = getComponents(p, 1:10),
+    metavars = metavarsSL,
+    col =c('darkgreen', "forestgreen",'cornsilk1',"gold", "goldenrod1"),
+    #col = c("blue", 'lightblue', 'grey90', 'pink', 'darkred'),
+    cexCorval = 0.7,
+    colCorval = 'black',
+    colTitleX = OutlineColor,
+    colTitleY = OutlineColor,
+    colLabX = OutlineColor,
+    colLabY = OutlineColor,
+    colMain = OutlineColor,
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    #posColKey = 'top',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    #main = 'PC1-10 correlations',
+    colFrame = OutlineColor,
+    plotRsquared = FALSE, 
+    corMultipleTestCorrection = 'BH')
+    #plotRsquared = TRUE,
+    #corFUN = 'pearson',
+    #corUSE = 'pairwise.complete.obs',
+    # theme_minimal() + awhite + theme(axis.title.x = element_blank()) +
+    # theme( panel.grid.major = element_blank(),panel.grid.minor = element_blank()) +
+    # theme(text = element_text(colour = "white"))
+    prow <- cowplot::plot_grid(EC, labels = c(""), ncol = 1)
+    AA<- cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.02, 0.05, 0.98))
+    ggsave(AA, bg='transparent', filename = paste(paste(save_name, Type, gg, "Gene-EigencorplotPCA", sep="_") ,".png", sep=""), path = pathPlots , 
+             device='png', dpi=300, width = 10,height = 5)
+    plot(AA)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+```
+
+#-
+
+## 4 GSEA 
+
+### 4.1 KEGG & WIKI Pairwise Comparisons
+
+Pathway analysis Kegg and Wiki for spatial comparisons
+
+```{r,  message=FALSE,warning=FALSE, fig.width=10, fig.height=10}
+#########################################################
+#For Reproducibility a Kegg.db was created on 26.06.2023# add use_internal_data=T to gseKEGG
+#########################################################
+#https://github.com/YuLab-SMU/clusterProfiler/issues/561
+#We need to downlaod and create a newest KEGG.db prior use and than tell ClusterProfiler to use
+#internal data: use_internal_data=T
+#Update the clusterprofilier to the latest Github version ( the lastest version is 4.7.1.3)
+#install.packages("remotes")
+#remotes::install_github("YuLab-SMU/clusterProfiler")
+#Establish a local KEGG database
+# install the packages
+# remotes::install_github("YuLab-SMU/createKEGGdb")
+# # import the library and create a KEGG database locally
+# library(createKEGGdb)
+# species <-c("ath","hsa","mmu", "rno","dre","dme","cel")
+# createKEGGdb::create_kegg_db(species)
+# # You will get KEGG.db_1.0.tar.gz file in your working directory
+# #install the KEGG.db and import it
+# install.packages("KEGG.db_26.06.2023.tar.gz", repos=NULL,type="source")
+# library(KEGG.db)
+#add use_internal_data=T in your enrichKEGG function
+
+
+######################
+#GSEA with TPM Filter#
+######################
+#############
+#KEGG & WIKI#
+#############
+
+#might take some minutes
+  for (i in names(.GlobalEnv[[name]])[grepl("dds", names(.GlobalEnv[[name]]))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({  
+  a           <- length(.GlobalEnv[[name]])
+  g           <- paste(i)
+  gg          <- sub('...', '', g)
+  if (gg == "Gill" ) {
+  SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+  Samples <-  if (gg == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+  
+  name2       <- .GlobalEnv[[name]][names(.GlobalEnv[[name]])[grepl(paste(gg), names(.GlobalEnv[[name]]))]]
+  tpm         <- name2[[names(name2)[grepl("tpm", names(name2))]]]
+  vst         <- assay(name2[[names(name2)[grepl("vst", names(name2))]]])
+  res         <- name2[[names(name2)[grepl("res", names(name2))]]]
+
+  Comparisons <- name2[[names(name2)[grepl("res", names(name2))]]]
+  names(Comparisons) <-paste(gg, names(Comparisons), sep="-")
+  
+  FILENAME    <- paste("Replicates")
+  TITLE       <- paste("Replicates")
+  A           <- GeneGSEAPlotKEGGandWikiRKwhiteSLUC_Kegg_Online(tpm = tpm , vst = vst, Species = Species, tpm_value = 1, Samples = Samples, 
+                               SAMDF = SAMDF, TITLE = TITLE, filename= FILENAME, Comparisons = Comparisons)}, 
+  error=function(e){cat("ERROR :",conditionMessage(e), "\n")})}
+
+#Remove Empty list elements
+.GlobalEnv[[name]]<- .GlobalEnv[[name]][lapply(.GlobalEnv[[name]],length)>0]
+names(.GlobalEnv[[name]])
+
+###########
+#Save Data#
+###########
+saveRDS(.GlobalEnv[[name]], file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG-Replicates-Outlier-GSEA-KEGGandWiki-Online", sep="_"), paste("LFC", LFCThreshold, sep=""), Date, sep="_"), ".rds", sep=""))))
+
+###########
+#Read Data#
+###########
+LFCThreshold <- 0.05
+name <-paste0(Species, sep = "")
+assign(paste0(Species, sep = ""), list()) 
+.GlobalEnv[[name]]<-readRDS(.GlobalEnv[[name]], file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG-Replicates-Outlier-GSEA-KEGGandWiki-Online", sep="_"), paste("LFC", LFCThreshold, sep=""), Date, sep="_"), ".rds", sep=""))))
+
+#Checkup of differential genes and Pathways identified: 
+#Diferentially expressed Gill-Genes
+print(stack(sapply(.GlobalEnv[[name]]$resGill,dim)[1,]))
+#Significant KEGG Pathways
+print(stack(sapply(.GlobalEnv[[name]]$gseKEGG.Gill,dim)[1,]))
+#Diferentially expressed Liver-Genes
+print(stack(sapply(.GlobalEnv[[name]]$resLiver,dim)[1,]))
+#Significant KEGG Pathways
+print(stack(sapply(.GlobalEnv[[name]]$gseKEGG.Liver,dim)[1,]))
+```
+
+### 4.2 Hierachize KEGG Pathways 
+
+  Download the KEGG Parent Pathway Map here: https://www.genome.jp/kegg-bin/get_htext?br08901.keg
+    Order all Differentially Abundant Pathways to the Parent Categories
+    Get all genes for relevant Pathways
+      Cluster-Heatmap those -> Heatplot under GSEA KEGG&WIKI
+      
+#### 4.2.1 Creation of KeggPathwayMaps
+      
+```{r,  message=FALSE,warning=FALSE}
+#############################
+#Creation of KeggPathwayMaps#
+#############################
+# library(readxl)
+# KeggPathwayMaps<- as.data.frame(read_excel(file.path(path_Output_RNA, "KeggPathwayMaps-08.05.2023-RK.xlsx")))[,-1]
+# KeggPathwayMaps$PathwayID<- formatC(KeggPathwayMaps$hsa, width = 5, format = "d", flag = "0")
+# KeggPathwayMaps$PathwayID<- paste("hsa", KeggPathwayMaps$PathwayID, sep="")
+#
+# KeggPathwayDescription<- as.data.frame(read_excel(file.path(path_Output_RNA, "KeggPathwayDescription-08.05.2023.xlsx")))
+#
+# KeggPathwayMaps <- dplyr::left_join(KeggPathwayMaps, KeggPathwayDescription)
+# KeggPathwayMaps[c("PathwayID", "Description")]
+#
+# require(limma)
+# tab <- getGeneKEGGLinks(species="hsa")
+# tab$Symbol <- mapIds(org.Hs.eg.db, tab$GeneID,
+#                        column="SYMBOL", keytype="ENTREZID")
+# library(dplyr)
+# A <- tab %>%group_by(PathwayID) %>%
+#   summarise(Symbol = toString(Symbol)) %>%
+#   ungroup()
+# B <- tab %>%group_by(PathwayID) %>%
+#   summarise(GeneID = toString(GeneID)) %>%
+#   ungroup()
+# BB<- dplyr::left_join(A,B)
+# A <- merge(KeggPathwayMaps, BB,  all.x=TRUE, by="PathwayID")
+# A$Symbol<- gsub("\\, ", "/", A$Symbol)
+# A$GeneID<- gsub("\\, ", "/", A$GeneID)
+# saveRDS(A, file = paste0(file.path(path_Output_RNA, "KeggPathwayMapsGenes08.05.2023"),".rds"))
+
+# head(tab)
+# tabOfInterest <- tab[tab$PathwayID == "hsa01100",]
+# genes_of_interest <-  as.vector(tabOfInterest$Symbol)
+#write.csv2(KeggPathwayMapsGenes, file.path(path_Output_RNA, "KeggPathwayMapsGenes09.05.23.csv"))
+
+#KeggPathwayMapsGenes <- readRDS(file = paste0(file.path(path_Output_RNA_Annotation, "KeggPathwayMapsGenes08.05.2023"), ".rds"))
+
+```
+
+#### 4.2.2 Tissue Specific KEGG output
+
+```{r,  message=FALSE,warning=FALSE, fig.width=10, fig.height=12}
+######
+#KEGG#
+######
+KeggPathwayMapsGenes <- readRDS(file = paste0(file.path(path_Input_RNA, "KeggPathwayMapsGenes08.05.2023"), ".rds"))
+KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+KeggPathwayMapsGenes$PathwayGeneID <- KeggPathwayMapsGenes$GeneID
+KeggPathwayMapsGenes$PathwaySymbol <- KeggPathwayMapsGenes$Symbol
+
+####################
+#Tissues Individual#
+####################
+for (i in names(.GlobalEnv[[name]])[grepl("gseKEGG.Liver|gseKEGG.Gill", names(.GlobalEnv[[name]]))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({  
+  a           <- length(.GlobalEnv[[name]])
+  g           <- paste(i)
+  gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  
+  if (gg == "Gill" ) {
+  SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+  Samples <-  if (gg == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+  
+  A <- .GlobalEnv[[name]][[i]]
+
+  #Add the KeggPathwayMaps
+  KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+  for (ii in names(A)) {
+  A[[ii]] <- dplyr::left_join(A[[ii]], KeggPathwayMapsGenes[KeggPathwayMapsGenes$ID %in% A[[ii]]$ID,])}
+  B <- do.call(rbind.data.frame, A)
+  B <- B[!is.na(B$Parent),]
+
+  B$Comparison <- gsub("\\..*","",rownames(B))
+  B$Comparison <- gsub("(Gill|Liver)-*","",B$Comparison)
+  rownames(B) <- NULL
+  
+  
+  trial <- as.data.frame(B %>% 
+    dplyr::group_by(Comparison, Child) %>% dplyr::summarise(GeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+  trial2 <- as.data.frame(B %>% 
+    dplyr::group_by(Child) %>% 
+    dplyr::summarise(ChildGeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+  trial3 <- dplyr::left_join(trial, trial2)
+  trial3$ModuleRatio <- trial3$GeneCount / trial3$ChildGeneCount * 100
+  
+  B <- dplyr::left_join(B, trial3)
+  BB <- B
+  BB <- BB[c("Comparison", "NES", "Description", "GeneRatio", "p.adjust", "sign", "Child", "Parent", "ModuleRatio")]
+
+  #Selection of Comparisons
+  VariableOrder<-VariableOrder
+  CompOrder <- as.data.frame(t(combn(SAMDF %>% 
+  arrange(factor(Replicates, levels = VariableOrder)) %>% 
+  pull(paste(variable)) %>% 
+  unique(),2)))
+  CompOrder$V3<-Reduce(function(...) paste(..., sep = "-"), CompOrder )
+  CompOrder$V4 <- gsub("SLSU", "", CompOrder$V3)
+  
+  BB$fComparison <- factor(BB$Comparison, levels=CompOrder$V3[CompOrder$V3 %in% BB$Comparison])
+  BB$fComp <- gsub("SLSU", "", BB$fComparison)
+  BB$fComp <- factor(BB$fComp, levels=CompOrder$V4[CompOrder$V4 %in% BB$fComp])
+  
+
+  Order <- c("activated", "suppressed")
+  mg <- ggplot(BB, aes(x = fComp, y = Child, color=ModuleRatio, size = ModuleRatio)) + geom_point() + scale_size(range = c(1, 15)) +
+scale_color_gradientn(colours = c("blue", "pink", "red", "red"), 
+                        values = scales::rescale(x = c(0, 10, 50, 100), to = c(0,1), from = c(0, 50) ))
+mg <- mg + facet_grid(Parent ~ factor(sign, levels=Order), scales = "free", space = "free") + 
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="white"), 
+        strip.text = element_text(color = "black", face= "bold")) +
+  ggtitle(paste(gg, "Enriched Pathways", sep=" "))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("red", "blue"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+ggsave(AA, filename = paste(paste(save_name, Type, paste("Slim_GSEA_KEGGPathway", gg, sep="_"), sep="_") ,".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10,height = 12)
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+
+```
+
+#### 4.2.3 Combined Tissue KEGG output
+
+```{r,  Combined Tissue KEGG Output, message=FALSE,warning=FALSE, fig.width=10, fig.height=12}
+
+#######################
+#Gill & Liver Combined#
+#######################
+
+Slims <- list()
+for (i in names(.GlobalEnv[[name]])[grepl("gseKEGG.Gill|gseKEGG.Liver", names(.GlobalEnv[[name]]))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({  
+  a           <- length(.GlobalEnv[[name]])
+  g           <- paste(i)
+  gg          <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", i)
+  
+  if (gg == "Gill" ) {
+  SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+  Samples <-  if (gg == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+  
+  A<- .GlobalEnv[[name]][[i]]
+
+  #Add the KeggPathwayMaps
+  KeggPathwayMapsGenes$ID <- KeggPathwayMapsGenes$PathwayID 
+  for (ii in names(A)) {
+  A[[ii]] <- dplyr::left_join(A[[ii]], KeggPathwayMapsGenes[KeggPathwayMapsGenes$ID %in% A[[ii]]$ID,])}
+  B <- do.call(rbind.data.frame, A)
+  B <- B[!is.na(B$Parent),]
+
+  B$Comparison <- gsub("\\..*","",rownames(B))
+  B$Comparison <- gsub("(Gill|Liver)-*","",B$Comparison)
+  rownames(B) <- NULL
+
+  trial <- as.data.frame(B %>% 
+    dplyr::group_by(Comparison, Child) %>% dplyr::summarise(GeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+  trial2 <- as.data.frame(B %>% 
+    dplyr::group_by(Child) %>% 
+    dplyr::summarise(ChildGeneCount = length(unique(as.vector(unique(unlist(str_split(GeneID, "/"))))))))
+  trial3 <- dplyr::left_join(trial, trial2)
+  trial3$ModuleRatio <- trial3$GeneCount / trial3$ChildGeneCount * 100
+  
+  B <- dplyr::left_join(B, trial3)
+  BB <- B
+  BB <- BB[c("Comparison", "NES", "Description", "GeneRatio", "p.adjust", "sign", "Child", "Parent", "ModuleRatio")]
+  
+  #Selection of Comparisons
+  VariableOrder<-VariableOrder
+  CompOrder <- as.data.frame(t(combn(SAMDF %>% 
+  arrange(factor(Replicates, levels = VariableOrder)) %>% 
+  pull(paste(variable)) %>% 
+  unique(),2)))
+  CompOrder$V3<-Reduce(function(...) paste(..., sep = "-"), CompOrder )
+  CompOrder$V4 <- gsub("SLSU", "", CompOrder$V3)
+  
+  BB$fComparison <- factor(BB$Comparison, levels=CompOrder$V3[CompOrder$V3 %in% BB$Comparison])
+  BB$fComp <- gsub("SLSU", "", BB$fComparison)
+  BB$fComp <- factor(BB$fComp, levels=CompOrder$V4[CompOrder$V4 %in% BB$fComp])
+  BB$Tissue <- paste(gg)
+  
+  b <- length(Slims)
+  Slims[[b+1]] <- BB
+  names(Slims)[[b+1]] <- gg  
+  
+}, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})} 
+  
+  
+Slim <- do.call(rbind.data.frame, Slims)
+rownames(Slim) <- c()
+Slim$fComp <- factor(Slim$fComp, levels=CompOrder$V4[CompOrder$V4 %in% Slim$fComp])
+
+
+Order <- c("Gill", "Liver")
+mg <- ggplot(Slim, aes(x = fComp, y = Child, color=sign, size = ModuleRatio)) + geom_point() + scale_size(range = c(1, 15)) 
+#scale_color_manual(colours = c("blue",  "red")) 
+#scale_colour_manual(values=c("blue",  "red"))
+mg <- mg + facet_grid(Parent ~ factor(Tissue, levels=Order), scales = "free", space = "free") + 
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="white"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("salmon", "darkred"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+ggsave(AA, filename = paste(paste(save_name, Type, paste("Slim_Tissues_GSEA_KEGGPathway", gg, sep="_"), sep="_") ,".png", sep=""), path = pathPlots ,device='png', dpi=300, width = 10,height = 12)
+```
+
+#### 4.2.4 KEGG Specific Child Terms
+
+```{r,  KEGG Specific Child Terms, message=FALSE, warning=FALSE, fig.width=10, fig.height=12}
+######################
+#Specific Child Terms#
+######################
+
+Slim <- do.call(rbind.data.frame, Slims)
+rownames(Slim) <- c()
+Slim$fComp <- factor(Slim$fComp, levels=CompOrder$V4[CompOrder$V4 %in% Slim$fComp])
+
+SlimSpecific <- Slim[Slim$Parent %in% c("Carbon metabolism", "Metabolic pathways"), ]
+
+Order <- c("Gill", "Liver")
+mg <- ggplot(SlimSpecific,aes(x = fComp, y = Description, color=sign, size = ModuleRatio)) + geom_point() + scale_size(range = c(1, 15))
+#scale_color_manual(colours = c("blue",  "red")) 
+#scale_colour_manual(values=c("blue",  "red"))
+mg <- mg + facet_grid(Child ~ factor(Tissue, levels=Order), scales = "free", space = "free") + 
+        #theme_minimal() + 
+        atheme + 
+        theme(strip.text.y = element_text(angle = 0))  +
+        theme(#axis.text.x=element_blank(),
+        #axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.title.y.left = element_blank(),
+        axis.ticks.y =element_blank() 
+        #axis.title.x = element_blank()
+        ) +
+  theme(
+    panel.background = element_rect(fill='transparent'), #transparent panel bg
+    plot.background = element_rect(fill='transparent', color=NA), #transparent plot bg
+    #panel.grid.major = element_blank(), #remove major gridlines
+    #panel.grid.minor = element_blank(), #remove minor gridlines
+    legend.background = element_rect(fill='transparent'), #transparent legend bg
+    legend.box.background = element_rect(fill='transparent'), #transparent legend panel
+    panel.grid.major = element_line(colour = "grey40"), 
+    panel.grid.minor = element_line(colour = "grey40") 
+  ) +
+  theme(axis.title.x.bottom =  element_text(color="white"), 
+        strip.text = element_text(color = "black", face= "bold"))
+
+g <- ggplot_gtable(ggplot_build(mg))
+        stripr <- which(grepl('strip-t', g$layout$name))
+        fills <- alpha(c("salmon", "darkred"), 0.4)
+        k <- 1
+        for (x in stripr) {
+        j <- which(grepl('rect', g$grobs[[x]]$grobs[[1]]$childrenOrder))
+        g$grobs[[x]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+        k <- k+1}
+        prow <- cowplot::plot_grid(g, labels = c(""), ncol = 1)
+        AA<- print(cowplot::plot_grid(prow, ncol = 1, rel_heights = c(0.1, 0.99)))
+ggsave(AA, filename = paste(paste(save_name, Type, paste("Slim_Metabolism_GSEA_KEGGPathway", gg, sep="_"), sep="_") ,".png", sep=""), path = pathPlots , device='png', dpi=300, width = 10,height = 12)
+
+```
+
+#- 
+
+## 5 Aggregate DESeq2 Heatmap
+
+```{r, Aggregate DESeq2 Heatmap, message=FALSE, warning=FALSE}
+DeseqLFC005 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "0.05", sep=""), Date, sep="_"), ".rds", sep=""))))
+DeseqLFC1 <- readRDS(file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG_Replicates_Outlier_pairwise", sep="_"), paste("LFC", "1", sep=""), Date, sep="_"), ".rds", sep=""))))
+
+##########
+#Heatmap #
+##########
+tpm_value <- 1; print(paste("TPM value =", tpm_value))
+columnGillClusterNumber  <- 1
+rowGillClusterNumber     <- 4
+columnLiverClusterNumber <- 1
+rowLiverClusterNumber    <- 4
+WidthValue  <- 10
+HeightValue <- 10
+
+hmap_list <- list()
+for (resSet in names(DeseqLFC005)[grepl("dds", names(DeseqLFC005))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({
+    
+    hmap_list_length <- length(hmap_list)
+    Tissue      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", resSet); print(resSet)
+    Samples <-  if (Tissue == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+    
+    #Selection of  Sample file
+    SAMDF <- if (Tissue == "Gill" ) {
+    SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+    
+    TPM  <- DeseqLFC005[[paste("tpm", Tissue, sep="")]]
+    RES  <- DeseqLFC005[[paste("res", Tissue, sep="")]]
+    Core <- DeseqLFC1[[paste("res", Tissue, sep="")]]
+
+    resgenelist   <- list()
+      for (PairwiseComp in names(RES)) {
+          RES[[PairwiseComp ]]$Human_SYMBOL_Manual_unique <- 
+            make.unique(RES[[PairwiseComp ]]$rowname, sep = "_")
+          genes1 <- RES[[PairwiseComp]]$Human_SYMBOL_Manual_unique
+          genes2 <- RES[[PairwiseComp]]$Geneid
+          genes3 <- RES[[PairwiseComp]]$ENTREZID_Manual
+          resgenelist[[PairwiseComp]]$Human_SYMBOL_Manual_unique <- genes1
+          resgenelist[[PairwiseComp]]$Geneid <- genes2
+          resgenelist[[PairwiseComp]]$ENTREZID <- genes3
+          }
+          dedup_ids <- do.call(rbind.data.frame, resgenelist)
+          dedup_ids <- dedup_ids[!duplicated(dedup_ids$Geneid),]
+          
+     resgenelistCore   <- list()
+      for (PairwiseComp in names(Core)) {
+          Core[[PairwiseComp ]]$Human_SYMBOL_Manual_unique <- 
+            make.unique(Core[[PairwiseComp ]]$rowname, sep = "_")
+          genes1 <- Core[[PairwiseComp]]$Human_SYMBOL_Manual_unique
+          genes2 <- Core[[PairwiseComp]]$Geneid
+          genes3 <- Core[[PairwiseComp]]$ENTREZID_Manual
+          resgenelistCore[[PairwiseComp]]$Human_SYMBOL_Manual_unique <- genes1
+          resgenelistCore[[PairwiseComp]]$Geneid <- genes2
+          resgenelistCore[[PairwiseComp]]$ENTREZID <- genes3
+          }
+          dedup_idsCore <- do.call(rbind.data.frame, resgenelistCore)
+          dedup_idsCore <- dedup_idsCore[!duplicated(dedup_idsCore$Geneid), ]
+          Core <- dedup_idsCore$Human_SYMBOL_Manual_unique
+          length(Core)
+          #Replace long names in the Core variable#
+          Core[which(nchar(Core) > 27)] <- substr(Core[which(nchar(Core) > 27)], 1, 27)
+          
+          TPM <- TPM[names(TPM) %in% SAMDF$SAMPLE]
+          TPM$Geneid <- rownames(TPM)
+          TPM  <-dplyr::left_join(TPM, SLUCGeneManual[c("Geneid", "Human_SYMBOL_Manual", "ENTREZID_Manual")])
+          TPM$Human_SYMBOL_Manual_unique <- make.unique(TPM$Human_SYMBOL_Manual, sep = "_") 
+
+          FILENAME2   <- paste(paste(save_name, "TPM_Heatmap", Tissue, Type, "noClust", sep="_"), ".png", sep="")
+          
+          TITLE       <- draw_label_themeRKwhite(
+                        paste(Species, Tissue, Type, Analysis, sep=" "),
+                        element = "plot.title", x =  0.05, hjust = 0, vjust = 1)
+    
+    
+          Input     <- TPM[TPM$Geneid %in% dedup_ids$Geneid, ]
+          print(paste(Tissue, "genes before TPM filter", tpm_value, ":", dim(Input)[1]))
+          Input     <- Input[(rowSums(Input[,Samples] > tpm_value) >= 3),] #TPM Filter
+          print(paste(Tissue, "genes after TPM filter", tpm_value, ":", dim(Input)[1]))
+          rownames(Input) <- Input$Human_SYMBOL_Manual_unique
+          
+          table(rownames(Input) %in% Core)
+
+          GeneHeatPlotRK_Clust_SL_tpm_core(Species = Species, Input = Input, 
+                          Samples = Samples, SAMDF = SAMDF,   TITLE = TITLE, 
+                          filename= FILENAME2, OutlineColor = "grey30") 
+          
+         hmap_list[[hmap_list_length+1]] <- hmap
+         hmap_list[[hmap_list_length+2]] <- Input
+         names(hmap_list)[[hmap_list_length+1]] <- paste("hmap", Tissue, Type, sep="_")
+         names(hmap_list)[[hmap_list_length+2]] <- paste("Input", Tissue, Type, sep="_")
+         
+        }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+```
+#### 5.1 Cluster ORA 
+
+##### 5.1.1 Extract Cluster
+
+```{r,  Extract Cluster, message=FALSE, warning=FALSE }
+#############################  
+#Genes from Extract Clusters#
+#############################
+Cluster       <- list()
+for (resSet in names(DeseqLFC005)[grepl("dds", names(DeseqLFC005))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  tryCatch({
+    
+    a <- length(Cluster)
+    
+    Tissue      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", resSet); print(resSet)
+    Samples <-  if (Tissue == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+    
+    #Selection of  Sample file
+    SAMDF <- if (Tissue == "Gill" ) {
+    SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+    
+    TPM  <- DeseqLFC005[[paste("tpm", Tissue, sep="")]]
+    RES  <- DeseqLFC005[[paste("res", Tissue, sep="")]]
+    Core <- DeseqLFC1[[paste("res", Tissue, sep="")]]
+
+    Samples <-  SAMDF$SAMPLE
+    
+    hmap        <- hmap_list[[paste("hmap", Tissue, Type, sep="_")]]
+    Input       <- hmap_list[[paste("Input", Tissue, Type, sep="_")]]
+    Input       <- Input[,names(Input) %in% Samples]
+    heat        <- t(scale(t(as.matrix(Input))))   #z-Score of vst data
+    
+    ##############################
+    #Extract Cluster from Heatmap#
+    ##############################
+    hmap        <- draw(hmap)
+    clrow       <- row_order(hmap)
+    genecluster <- lapply(names(clrow), function(x){
+         out  <- data.frame(GeneID = rownames(heat[clrow[[x]],]),
+            clrow = paste0(x),stringsAsFactors = FALSE)
+            return(out)}) %>%  
+         do.call(rbind, .)
+    
+    Cluster1    <- genecluster[genecluster$clrow %in% c("Cluster 1"),]
+    Cluster2    <- genecluster[genecluster$clrow %in% c("Cluster 2"),]
+    Cluster3    <- genecluster[genecluster$clrow %in% c("Cluster 3"),]
+    Cluster4    <- genecluster[genecluster$clrow %in% c("Cluster 4"),]
+
+    Cluster1    <- heat[rownames(heat) %in% Cluster1$GeneID,]
+    Cluster2    <- heat[rownames(heat) %in% Cluster2$GeneID,]
+    Cluster3    <- heat[rownames(heat) %in% Cluster3$GeneID,]
+    Cluster4    <- heat[rownames(heat) %in% Cluster4$GeneID,]
+
+    Cluster[[a+1]] <- as.data.frame(Cluster1)
+    Cluster[[a+2]] <- as.data.frame(Cluster2)
+    Cluster[[a+3]] <- as.data.frame(Cluster3)
+    Cluster[[a+4]] <- as.data.frame(Cluster4)
+
+    names(Cluster)[[a+1]] <- paste("Cluster1-", sub("dds", "\\1", Tissue), sep="")
+    names(Cluster)[[a+2]] <- paste("Cluster2-", sub("dds", "\\1", Tissue), sep="")
+    names(Cluster)[[a+3]] <- paste("Cluster3-", sub("dds", "\\1", Tissue), sep="")
+    names(Cluster)[[a+4]] <- paste("Cluster4-", sub("dds", "\\1", Tissue), sep="")
+    
+  },error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+}
+
+Clusters <- list("Cluster-Liver" = Cluster[names(Cluster)[grepl("Liver", names(Cluster))]], 
+                 "Cluster-Gill" = Cluster[names(Cluster)[grepl("Gill", names(Cluster))]])
+
+saveRDS(Clusters, file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG-Replicates-LFC005-Outlier-hmap-Cluster", sep="_"), paste("LFC", LFCThreshold, sep=""), Date, sep="_"), ".rds", sep=""))))
+```
+
+##### 5.1.2 ORA KEGG
+
+```{r,  ORA KEGG, message=FALSE, warning=FALSE }
+###############
+#ORA Go & KEGG#
+###############
+OraKeggPlot_list <- list()
+for (resSet in names(DeseqLFC005)[grepl("dds", names(DeseqLFC005))]) {
+  #https://github.com/kevinblighe/E-MTAB-6141
+  
+    Tissue      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", resSet); print(resSet)
+    Samples <-  if (Tissue == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+    
+    #Selection of  Sample file
+    SAMDF <- if (Tissue == "Gill" ) {
+    SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+    
+    TPM  <- DeseqLFC005[[paste("tpm", Tissue, sep="")]]
+    RES  <- DeseqLFC005[[paste("res", Tissue, sep="")]]
+    Core <- DeseqLFC1[[paste("res", Tissue, sep="")]]
+
+    Samples     <-  SAMDF$SAMPLE
+    CLUSTER     <- Clusters[[paste("Cluster", Tissue, sep="-")]]
+    Input       <- hmap_list[[paste("Input", Tissue, Type, sep="_")]]
+    
+    
+    for (Cluster in names(CLUSTER)) {
+      tryCatch({
+      OraKeggPlot_list_length <- length(OraKeggPlot_list)
+        
+      FILENAME      <- paste("Cluster_ORA", Cluster , Type, sep="_" )
+      
+      
+      
+      TITLE         <- paste(Cluster , Type, sep="_" )
+      
+      
+      dedup_ids <- left_join(CLUSTER[[Cluster]] %>% 
+                            mutate(Human_SYMBOL_Manual_unique = rownames(CLUSTER[[Cluster]])),
+                             Input[-which(names(Input) %in% Samples)])
+  
+      WGCNAORAPlotRKwhite6SLUC_Publication(TPM = TPM, vst = vst, Species = Species, TPM_value = 1, 
+                              Samples = Samples, SAMDF = SAMDF,  TITLE = TITLE, 
+                              filename= FILENAME , dedup_ids = dedup_ids)
+      
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+      OraKeggPlot_list[[OraKeggPlot_list_length+1]] <- KEGGUp
+      names(OraKeggPlot_list)[[OraKeggPlot_list_length+1]] <- TITLE
+    }
+}
+
+saveRDS(OraKeggPlot_list, file = paste0(file.path(path_Output_RNA,  paste(paste(paste(save_name, "DEG-Replicates-LFC005-Outlier-hmap-Cluster-ORA", sep="_"), paste("LFC", LFCThreshold, sep=""), Date, sep="_"), ".rds", sep=""))))
+```
+
+##### 5.1.3 Combined Plots
+
+```{r,  Combined Plots, message=FALSE,warning=FALSE, fig.width=6, fig.height=8}
+##################
+#Combined Barplot#
+##################
+ClusterKEGGTop10_list <- list()
+for (TISSUE in names(OraKeggPlot_list[grepl(paste("Cluster1"), names(OraKeggPlot_list))])) {
+  
+    a <- length(ClusterKEGGTop10_list)
+     
+    Tissue      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", TISSUE); print(Tissue)
+
+    FILENAME      <- paste("Cluster_ORA_KEGG", Tissue, sep="_" )
+      
+    ClusterKEGGs <- OraKeggPlot_list[grepl(paste(Tissue), names(OraKeggPlot_list))]
+
+    ClusterKEGG <- do.call(rbind.data.frame, ClusterKEGGs)
+    ClusterKEGG$Cluster <- sub("\\..*$", "", rownames(ClusterKEGG))
+    ########################
+    #Exclude Human Diseases# < mostly not informative 
+    ########################
+    ClusterKEGG <- ClusterKEGG[ClusterKEGG$category != "Human Diseases",]
+    #Take only top 10 Pathways
+    ClusterKEGGTop10<-  as.data.frame(ClusterKEGG  %>%  
+                                      dplyr::group_by(Cluster) %>% 
+                                      dplyr::arrange(p.adjust, desc(p.adjust)) %>%
+                                      dplyr::slice_head(n = 10))
+    ClusterKEGGTop10 <- na.omit(ClusterKEGGTop10)
+    
+    ClusterKEGGTop10_plot <- ggplot(ClusterKEGGTop10, aes(x = reorder(Description, -pvalue), 
+                                                       y = Count, fill = -p.adjust)) +
+    geom_bar(stat = "identity") +
+    coord_flip() +
+    scale_fill_continuous(low = "deepskyblue3", high = "#b11226") +
+    labs(x = "", y = "", fill = "p.adjust") +
+    theme(axis.text = element_text(size = 10)) +
+    facet_wrap(~ Cluster, ncol = 1, scales = "free") +
+    theme_minimal() + atheme + 
+    theme(axis.title.x = element_blank()) #+
+      #theme(plot.margin = unit(c(1,5,1,1),"cm")) #Top, Right, Bottom, Left.
+    ggsave(ClusterKEGGTop10_plot, filename = paste(paste(save_name, Type, FILENAME, sep="_") ,".png", sep=""), path = pathPlots,
+               device='png',        dpi=300, width = 6,height = 8)
+    ClusterKEGGTop10_list[[a+1]] <- ClusterKEGGTop10_plot
+    names(ClusterKEGGTop10_list)[[a+1]] <- Tissue
+}
+```
+
+###### 5.1.3.1 Cowplot
+
+```{r, Combined Cowplot,  message=FALSE, warning=FALSE, fig.width=15, fig.height=8}
+##################
+#Combined cowplot#
+##################
+for (resSet in names(DeseqLFC005)[grepl("dds", names(DeseqLFC005))]) {
+  require(grid)
+  require(cowplot)
+  tryCatch({
+  #https://github.com/kevinblighe/E-MTAB-6141
+
+    Tissue      <- gsub(paste0(".*", "(Gill|Liver)", ".*"), "\\1", resSet); print(resSet)
+    Samples <-  if (Tissue == "Gill" ) {
+      Samples <- Samples_RNA_Gill }else {
+      Samples <- Samples_RNA_Liver }
+    
+    #Selection of  Sample file
+    SAMDF <- if (Tissue == "Gill" ) {
+    SAMDF <- SAMDF_RNA_Gill } else {SAMDF <- SAMDF_RNA_Liver}
+    
+    TPM  <- DeseqLFC005[[paste("tpm", Tissue, sep="")]]
+    RES  <- DeseqLFC005[[paste("res", Tissue, sep="")]]
+    Core <- DeseqLFC1[[paste("res", Tissue, sep="")]]
+
+    Samples     <-  SAMDF$SAMPLE
+    Input       <-  as.data.frame(hmap_list[[paste("Input", Tissue, Type, sep="_")]])
+    Input       <-  Input[names(Input) %in% Samples]
+    heat        <-  t(scale(t(as.matrix(Input))))   #z-Score of vst data
+    
+    
+    ClusterKEGGTop10 <-           ClusterKEGGTop10_list[[Tissue]]
+    cowplot::plot_grid(grid.grabExpr(
+    ComplexHeatmap::draw(hmap_list[[paste("hmap", Tissue, Type, sep="_")]], background = "transparent", 
+                             heatmap_legend_side = 'left',
+                             annotation_legend_side = 'bottom',
+                             row_sub_title_side = 'left', 
+                             column_title = paste(Species, Tissue, Type, 
+      "Heatmap of", " [tpm-z-score ", dim(Input)[1], " genes/ ",     " tpm >", tpm_value," in 3]", sep = " "), 
+                             column_title_gp = gpar(fontsize = 10))
+    ), labels = c(""), ncol = 1) -> part_1
+
+    
+    cowplot::plot_grid(ClusterKEGGTop10, ncol = 1) -> part_2
+
+    cowplot::plot_grid(part_1, part_2, labels = c("", "")) -> part_3
+    plot(part_3)
+    ggsave(part_3, filename = 
+               paste(paste(save_name, Type, paste("CombinePlot_ORA_KEGG_Cluster_Heatmap",Tissue, sep="_"), sep="_") ,".png", sep=""), 
+             path = pathPlots, device='png', dpi=300, 
+           width = 15,
+           height = 8)
+    
+  }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+}
+```
+
+#-
+
+
+
+
+
