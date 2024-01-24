@@ -15,7 +15,9 @@ Additional files:
 Every .rmd is accompanied by a markdown .html that includes a subset of plots and results
 
 SL_Functions_16.01.24_Paper.Rmd is a long Functions-File that has to be saved in the R-directory and loaded in section ## 1.2 Functions in every .rmd
-There Exists a Packrat-bundle for private library sharing that has to be requested due to size limitation
+
+There is a packrat private R environment buldle that allows you to restore the packages used in the analysis: ElbeEstuarineZander-2024-01-23.tar.gz that has to be downloadded from 
+https://gitlab.rrz.uni-hamburg.de/ElbeEstuarineZander
 
 Sequence data are deposited in the ENA Sequence Read archive under study PRJEB71116
 
