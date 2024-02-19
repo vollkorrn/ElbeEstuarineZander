@@ -28,12 +28,6 @@ path_Output_WGCNA    <- paste(GitClonePath, "SL_Output_WGCNA", sep="/")
 
 #Output of all plots, the markdowns include only selections
 pathPlots          <- paste(GitClonePath, "SL_Plots", sep="/")
-
-#Create Folder if not existing
-ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_16S")), dir.create(file.path(GitClonePath, "SL_Output_16S")), FALSE)
-ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_RNA")), dir.create(file.path(GitClonePath, "SL_Output_RNA")), FALSE)
-ifelse(!dir.exists(file.path(GitClonePath, "SL_Output_RNA")), dir.create(file.path(GitClonePath, "SL_Output_RNA")), FALSE)
-ifelse(!dir.exists(file.path(GitClonePath, "SL_Plots")), dir.create(file.path(GitClonePath, "SL_Plots")), FALSE)
 ```
 
 ## 0.2 Packages
@@ -1936,7 +1930,7 @@ Samples_RNA_Gill<-c(
 
 ## 3.2 DESeq2
 
-```{r,  message=FALSE,warning=FALSE}
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
 Samples_RNA_Gill_List <- list("Samples_RNA_Gill_All" = Samples_RNA_Gill_All, "Samples_RNA_Gill"=Samples_RNA_Gill)
 
 WGCNA_RNA_Gill <- list()
@@ -1993,7 +1987,9 @@ for (Gills in names(Samples_RNA_Gill_List)){
   ggsave(RNA_vst_PCA_Gill, filename = paste(paste(save_name_RNA_Gill, "vst-PCA", Gills, sep="_"),".png", sep=""), path = pathPlots ,
          device='png', dpi=300, width = 7,
   height = 7)
+  
   plot(RNA_vst_PCA_Gill)
+  
   WGCNA_RNA_Gill[[Gills]]$RNA_vst_PCA_Gill <- RNA_vst_PCA_Gill
   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
   }
@@ -2127,14 +2123,33 @@ save(omics_data, datTraits, file = paste0(file.path(path_Output_WGCNA, paste(pas
 #Summary Plot#
 ##############
 cowplot::plot_grid(WGCNA_RNA_Gill$Samples_RNA_Gill_All$SampleClusteringTreePlot, WGCNA_RNA_Gill$Samples_RNA_Gill$SampleClusteringTreePlot, labels = c("A", "B"), rel_heights = c(1,1), rel_widths =  c(1,0.8), ncol = 2) -> part_1
-part_1
+
 cowplot::plot_grid(WGCNA_RNA_Gill$Samples_RNA_Gill_All$RNA_vst_PCA_Gill, WGCNA_RNA_Gill$Samples_RNA_Gill$RNA_vst_PCA_Gill, labels = c("C", "D"), rel_heights = c(1,1), rel_widths =  c(1,1), ncol = 2) -> part_2
-part_2
+
+
 cowplot::plot_grid(part_1, part_2, ncol = 1) -> part_3
 ggsave(part_3, filename = paste(paste(save_name_RNA_Gill, "SSU_DataInputPlot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 12)
-part_3
-```
 
+
+```
+### 3.2.1 Sample Selection
+
+Excluded sampes: 
+"SLSU21MGEB5" outlier in Euclidean-Distance clustering
+"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+Compare 4.2.1 
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+#Problems with Markdown html output
+replayPlot(WGCNA_RNA_Gill$Samples_RNA_Gill_All$SampleClusteringTreePlot)
+replayPlot(WGCNA_RNA_Gill$Samples_RNA_Gill$SampleClusteringTreePlot)
+
+
+suppressWarnings({
+plot(part_3)
+})
+```
 
 ## 3.3 Network construction
 
@@ -2225,6 +2240,7 @@ powers = c(c(1:10), seq(from = 12, to=20, by=2))
   si_mc_plot <- cowplot::plot_grid(scale_independence_plot, mean_connectivity_plot, ncol = 2, align = "h", labels = c("A", "B"))
 
   si_mc_plot
+  
   ggsave(si_mc_plot, filename = paste(paste(save_name_RNA_Gill, "soft_thresholding_power", sep="_"),".png", sep=""), path = pathPlots,
          device='png', dpi=300, width = 8, height = 6)
 
@@ -2755,12 +2771,14 @@ for (Livers in names(Samples_RNA_Liver_List)){
   ggsave(RNA_vst_PCA_Liver, filename = paste(paste(save_name_RNA_Liver, "vst-PCA", Livers, sep="_"),".png", sep=""), path = pathPlots ,
          device='png', dpi=300, width = 7,
   height = 7)
+  
   plot(RNA_vst_PCA_Liver)
+  
   WGCNA_RNA_Liver[[Livers]]$RNA_vst_PCA_Liver <- RNA_vst_PCA_Liver
   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
-  }
+}
 
-  #######################
+#######################
   ### 3.1.2 Clustering###
   #######################
 
@@ -2836,9 +2854,12 @@ for (Livers in names(Samples_RNA_Liver_List)){
   # Determine cluster under the line
   clust = cutreeStatic(sampleTree, cutHeight = 100, minSize = 10)
   table(clust)
+  
   # clust 1 contains the samples we want to keep.
   recordPlot() -> SampleClusteringTreePlot
 
+  replayPlot(SampleClusteringTreePlot)
+  
   #in Case we would exclude outliers from the tree: 
   #keepSamples = (clust==1)
   #omics_data0 = omics_data0[keepSamples, ]
@@ -2865,9 +2886,11 @@ for (Livers in names(Samples_RNA_Liver_List)){
   # Convert traits to a color representation: white means low, red means high, grey means missing entry
   traitColors = numbers2colors(datTraits, signed = FALSE)
   # Plot the sample dendrogram and the colors underneath.
+  
   plotDendroAndColors(sampleTree2, traitColors,
                     groupLabels = names(datTraits), 
                     main = "Sample dendrogram and trait heatmap")
+  
   recordPlot() -> SampleClusteringTreeTraitsPlot
 
   #=====================================================================================
@@ -2891,13 +2914,31 @@ save(omics_data, datTraits, file = paste0(file.path(path_Output_WGCNA, paste(pas
 #Summary Plot#
 ##############
 cowplot::plot_grid(WGCNA_RNA_Liver$Samples_RNA_Liver_All$SampleClusteringTreePlot, WGCNA_RNA_Liver$Samples_RNA_Liver$SampleClusteringTreePlot, labels = c("A", "B"), rel_heights = c(1,1), rel_widths =  c(1,0.8), ncol = 2) -> part_1
-part_1
+
 cowplot::plot_grid(WGCNA_RNA_Liver$Samples_RNA_Liver_All$RNA_vst_PCA_Liver, WGCNA_RNA_Liver$Samples_RNA_Liver$RNA_vst_PCA_Liver, labels = c("C", "D"), rel_heights = c(1,1), rel_widths =  c(1,1), ncol = 2) -> part_2
-part_2
+
 cowplot::plot_grid(part_1, part_2, ncol = 1) -> part_3
 ggsave(part_3, filename = paste(paste(save_name_RNA_Liver, "SSU_DataInputPlot", Date, sep="_"),".png", sep=""), path = pathPlots , device='png', dpi=300, width = 12, height = 12)
-part_3
 ```
+
+### 4.2.1 Sample Selection
+
+Excluded sampes: 
+"SLSU21MGEB5" outlier in Euclidean-Distance clustering
+"SLSU21SSEB6", doubble outlier from the group in Liver & Gill
+"SLSU21MGEB3", doubble outlier from the group in Liver & Gill
+Compare 4.2.1 
+
+```{r,  message=FALSE,warning=FALSE, fig.width=12, fig.height=12}
+#Problem with the Markdown Html output
+replayPlot(WGCNA_RNA_Liver$Samples_RNA_Liver_All$SampleClusteringTreePlot)
+replayPlot(WGCNA_RNA_Liver$Samples_RNA_Liver$SampleClusteringTreePlot)
+
+suppressWarnings({
+plot(part_3)
+})
+```
+
 
 ## 4.3 Network construction
 
